@@ -12,6 +12,9 @@
 CREATE SCHEMA IF NOT EXISTS advisory;
 SET search_path TO advisory, public;
 
+-- Case-insensitive email column type used by advisors.email below.
+CREATE EXTENSION IF NOT EXISTS citext;
+
 -- App-level roles map onto Postgres roles.
 DO $$
 BEGIN
@@ -61,3 +64,25 @@ CREATE TABLE IF NOT EXISTS cash_flows (
   net_new_money  numeric(18,2) NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cash_flows_advisor ON cash_flows(advisor_id);
+
+-- Integrity: a position's advisor_id must always match its client's advisor_id.
+-- RLS on positions filters purely by positions.advisor_id, so if these two ever
+-- diverged (e.g. a client reassigned without updating their positions) a
+-- position could surface in the wrong advisor's scoped view. This trigger makes
+-- that state unrepresentable.
+CREATE OR REPLACE FUNCTION advisory.check_position_advisor_matches_client()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.advisor_id <> (SELECT advisor_id FROM advisory.clients WHERE id = NEW.client_id) THEN
+    RAISE EXCEPTION
+      'positions.advisor_id (%) must match clients.advisor_id for client %',
+      NEW.advisor_id, NEW.client_id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_position_advisor_consistency ON positions;
+CREATE TRIGGER trg_position_advisor_consistency
+  BEFORE INSERT OR UPDATE ON positions
+  FOR EACH ROW EXECUTE FUNCTION advisory.check_position_advisor_matches_client();

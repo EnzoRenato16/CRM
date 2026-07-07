@@ -154,7 +154,14 @@ const assetClassDetail: ToolDef = {
     return cls ? { assetClass: cls } : {};
   },
   run: ({ principal }, params) => {
-    const assetClass = (params.assetClass as AssetClass) ?? "Renda Fixa";
+    // Validate the model/tool-supplied value against the allowed enum rather than
+    // trusting the cast — unknown input falls back to a safe default.
+    const requested = params.assetClass;
+    const assetClass: AssetClass = (ASSET_CLASSES as string[]).includes(
+      requested as string
+    )
+      ? (requested as AssetClass)
+      : "Renda Fixa";
     const summary = data.assetClassSummary(principal, assetClass);
     return {
       narrative: `Em **${assetClass}** há ${formatBRL(summary.total, {
@@ -197,7 +204,11 @@ const topClients: ToolDef = {
     return m ? { limit: Math.min(20, Math.max(1, Number(m[1]))) } : {};
   },
   run: ({ principal }, params) => {
-    const limit = (params.limit as number) ?? 5;
+    // Clamp the model/tool-supplied limit to a safe integer range [1, 20].
+    const rawLimit = Number(params.limit);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(20, Math.max(1, Math.floor(rawLimit)))
+      : 5;
     const clients = data.topClients(principal, limit);
     return {
       narrative: `Top ${clients.length} clientes por patrimônio.`,

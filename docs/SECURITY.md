@@ -46,7 +46,7 @@ na entrada quando ele menciona receita/comissão, respondendo com a mensagem de
   advisor to manager data” envia um ataque explícito de escalonamento e confirma
   que o resultado nunca é a ferramenta de receita.
 
-Rode tudo com `npm test` (10 testes).
+Rode tudo com `npm test` (17 testes).
 
 ## Mapeamento para produção (PostgreSQL)
 
@@ -62,6 +62,39 @@ Rode tudo com `npm test` (10 testes).
   gestor) como defesa em profundidade.
 - **`audit_log`** registra cada leitura (quem, papel, ferramenta, params,
   nº de linhas) — requisito de compliance.
+
+## Endurecimento (revisão de segurança)
+
+Uma revisão dedicada (RBAC/auth + camada de dados/RLS) motivou os reforços abaixo,
+todos com testes ou verificação:
+
+- **Segredo de sessão fail-closed** — `session.ts` **lança exceção** em produção se
+  `AUTH_SECRET` estiver ausente ou fraco (< 32 chars), em vez de assinar cookies com
+  uma constante pública (que permitiria forjar um cookie `role: "manager"`). Em dev,
+  o fallback de conveniência é mantido para rodar sem setup.
+- **Redação de coluna estrutural** — `scopedPositions()` agora devolve
+  `SafePositionRecord` (sem `grossRevenueYtd`/`advisorCommissionYtd`). Um futuro
+  card de assessor que tentasse repassar comissão **não compila** — o gêmeo em
+  runtime do GRANT de coluna do PostgreSQL.
+- **RLS forçada + `advisors` protegida** — `db/policies.sql` agora usa
+  `FORCE ROW LEVEL SECURITY` em todas as tabelas, adiciona RLS/política para
+  `advisors` (antes tinha SELECT amplo, vazando o roster), concede `USAGE` no schema,
+  revoga de `PUBLIC` e protege `audit_log` (INSERT-only por papel, sem SELECT).
+- **Validação de parâmetros do modelo** — `assetClass` é validado contra o enum e
+  `limit` é limitado a `[1, 20]` antes de executar a ferramenta (nunca confiar na
+  saída do LLM).
+- **Rate limiting** — `/api/auth/login` (anti brute-force) e `/api/query`
+  (custo/DoS de LLM) usam janela deslizante por IP/usuário.
+- **Cabeçalhos de segurança** — `next.config.mjs` envia CSP, `X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy` e HSTS.
+- **Comparação de senha em tempo constante** e **dependência Next.js** atualizada
+  para a linha 14.2.x corrigida (CVEs de bypass de middleware / DoS / SSRF).
+- **Integridade de dados** — trigger garante `positions.advisor_id = clients.advisor_id`,
+  evitando que uma posição apareça no escopo RLS do assessor errado.
+
+> Para uma revisão completa multi-modelo, os `agents` da ECC (`security-reviewer`,
+> `database-reviewer`) foram usados sobre esta base — recomendado a cada mudança
+> em auth, RBAC ou na camada de dados.
 
 ## Dados sensíveis e o provedor de LLM
 

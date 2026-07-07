@@ -74,6 +74,18 @@ export interface PositionRecord {
   advisorCommissionYtd: number;
 }
 
+/**
+ * A position with the commercially sensitive columns removed. This is the only
+ * shape the advisor-safe data primitives hand out, mirroring the PostgreSQL
+ * column GRANT that withholds revenue/commission columns from `app_advisor`
+ * (see db/policies.sql). Because the sensitive fields are absent from the type,
+ * a future advisor-reachable read that tried to forward them fails to compile.
+ */
+export type SafePositionRecord = Omit<
+  PositionRecord,
+  "grossRevenueYtd" | "advisorCommissionYtd"
+>;
+
 export interface CashFlowRecord {
   id: string;
   advisorId: string;

@@ -1,4 +1,17 @@
+import crypto from "node:crypto";
 import type { Principal, Role } from "@/lib/data/types";
+
+/**
+ * Constant-time string comparison. Hashing first equalizes length so we never
+ * leak length via `timingSafeEqual` throwing, and never short-circuit on the
+ * first differing byte the way `!==` would. (Real auth delegates this to the
+ * IdP / bcrypt; this keeps the demo pattern correct if it is ever copied.)
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash("sha256").update(a).digest();
+  const hb = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
 
 /**
  * Demo user directory.
@@ -49,7 +62,7 @@ export function verifyCredentials(email: string, password: string): Principal | 
   const user = DEMO_USERS.find(
     (u) => u.email.toLowerCase() === email.trim().toLowerCase()
   );
-  if (!user || user.password !== password) return null;
+  if (!user || !constantTimeEqual(user.password, password)) return null;
   return toPrincipal(user);
 }
 

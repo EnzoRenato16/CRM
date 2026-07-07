@@ -16,11 +16,38 @@
 
 SET search_path TO advisory, public;
 
--- 1) ROW-LEVEL SECURITY -------------------------------------------------------
+-- 0) BASELINE PRIVILEGES ------------------------------------------------------
+--    Nothing is reachable without USAGE on the schema; deny PUBLIC by default so
+--    a future broad GRANT can't silently re-open these tables. App roles receive
+--    only the narrow, explicit grants defined below.
 
+REVOKE ALL ON ALL TABLES IN SCHEMA advisory FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA advisory REVOKE ALL ON TABLES FROM PUBLIC;
+
+GRANT USAGE ON SCHEMA advisory TO app_advisor, app_manager;
+
+-- 1) ROW-LEVEL SECURITY -------------------------------------------------------
+--    ENABLE turns policies on; FORCE also applies them to the table owner, so a
+--    pooler/migration connection that forgets `SET LOCAL role` still cannot read
+--    across scope. Every table that holds advisor-scoped data is forced.
+
+ALTER TABLE advisors   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE clients    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE positions  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cash_flows ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE advisors   FORCE ROW LEVEL SECURITY;
+ALTER TABLE clients    FORCE ROW LEVEL SECURITY;
+ALTER TABLE positions  FORCE ROW LEVEL SECURITY;
+ALTER TABLE cash_flows FORCE ROW LEVEL SECURITY;
+
+-- Advisors: only their own advisor row (name/email/team); managers: all.
+CREATE POLICY advisor_self_row ON advisors
+  FOR SELECT TO app_advisor
+  USING (id = current_setting('app.current_advisor_id', true));
+
+CREATE POLICY manager_advisors_all ON advisors
+  FOR SELECT TO app_manager USING (true);
 
 -- Advisors: only their own rows.
 CREATE POLICY advisor_clients_scope ON clients
@@ -88,3 +115,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   params      jsonb,
   row_count   integer
 );
+
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
+
+-- Both roles may only APPEND to the trail (and use the id sequence). There is
+-- deliberately no SELECT grant or policy: neither app role can read the log via
+-- the application connection — audit reads use a separate, dedicated role, so an
+-- advisor can never see another advisor's query history.
+GRANT INSERT ON audit_log TO app_advisor, app_manager;
+GRANT USAGE ON SEQUENCE audit_log_id_seq TO app_advisor, app_manager;
+
+CREATE POLICY audit_insert_advisor ON audit_log
+  FOR INSERT TO app_advisor
+  WITH CHECK (advisor_id = current_setting('app.current_advisor_id', true));
+
+CREATE POLICY audit_insert_manager ON audit_log
+  FOR INSERT TO app_manager
+  WITH CHECK (true);

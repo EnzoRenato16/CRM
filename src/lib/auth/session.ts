@@ -16,8 +16,27 @@ import type { Principal } from "@/lib/data/types";
 const COOKIE_NAME = "ac_session";
 const MAX_AGE_SECONDS = 60 * 60 * 8; // 8h
 
+const DEV_FALLBACK_SECRET = "dev-insecure-secret-change-in-production";
+const MIN_SECRET_LENGTH = 32;
+
+/**
+ * Resolve the HMAC signing secret. Fails closed in production: if AUTH_SECRET is
+ * missing or too short we throw rather than silently signing sessions with a
+ * public constant (which would let anyone forge a `role: "manager"` cookie and
+ * defeat every downstream authorization layer). The weak fallback is allowed
+ * only outside production so the reference app still runs with zero setup.
+ */
 function secret(): string {
-  return process.env.AUTH_SECRET || "dev-insecure-secret-change-in-production";
+  const s = process.env.AUTH_SECRET;
+  if (process.env.NODE_ENV === "production") {
+    if (!s || s.length < MIN_SECRET_LENGTH) {
+      throw new Error(
+        `AUTH_SECRET must be set to a strong value (>= ${MIN_SECRET_LENGTH} chars) in production.`
+      );
+    }
+    return s;
+  }
+  return s || DEV_FALLBACK_SECRET;
 }
 
 function b64url(input: Buffer | string): string {

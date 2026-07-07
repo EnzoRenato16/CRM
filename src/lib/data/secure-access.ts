@@ -1,7 +1,7 @@
 import { db } from "./store";
 import type {
   Principal,
-  PositionRecord,
+  SafePositionRecord,
   Client,
   CashFlowRecord,
   SeriesPoint,
@@ -64,9 +64,15 @@ function assertManager(principal: Principal, what: string): void {
 // can reach is derived from `scopedPositions` / `scopedClients`, which are
 // filtered to their advisorId before any aggregation happens.
 
-function scopedPositions(principal: Principal): ReadonlyArray<PositionRecord> {
-  if (principal.role === "manager") return db.positions;
-  return db.positions.filter((p) => p.advisorId === principal.advisorId);
+function scopedPositions(principal: Principal): ReadonlyArray<SafePositionRecord> {
+  const rows =
+    principal.role === "manager"
+      ? db.positions
+      : db.positions.filter((p) => p.advisorId === principal.advisorId);
+  // Strip the sensitive columns at the primitive itself — the runtime twin of
+  // the SQL column GRANT. Revenue/commission cannot flow past this point through
+  // any advisor-safe read; manager-only reads use db.positions directly.
+  return rows.map(({ grossRevenueYtd, advisorCommissionYtd, ...safe }) => safe);
 }
 
 function scopedClients(principal: Principal): ReadonlyArray<Client> {
