@@ -63,3 +63,15 @@ body {
   background-color: rgba(130, 144, 169, 0.4);
   border-radius: 9999px;
 }
+
+/* Respect users who prefer reduced motion (fade-up cards, bounce, smooth scroll). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

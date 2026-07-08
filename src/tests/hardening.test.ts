@@ -5,9 +5,9 @@ import type { Principal } from "../lib/data/types";
 import { verifyCredentials } from "../lib/auth/users";
 import { rateLimit } from "../lib/rate-limit";
 import { getTool } from "../lib/tools/registry";
+import { orchestrate } from "../lib/llm/orchestrator";
 
 const gestora: Principal = { userId: "U-g", name: "Gabriela Mendes", email: "gestor@assessoria.com", role: "manager", advisorId: null };
-const ana: Principal = { userId: "U-ana", name: "Ana Souza", email: "ana@assessoria.com", role: "advisor", advisorId: "A-001" };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,30 +49,32 @@ test("rate limiter blocks past the limit and resets after the window", async () 
 });
 
 // =============================================================================
-//  TOOL PARAM VALIDATION — never trust the model/tool input
+//  TOOL PARAM VALIDATION — the Zod schema is the single gate; never trust input
 // =============================================================================
 
-test("asset_class_detail falls back to a safe class for unknown input", () => {
+test("asset_class_detail schema coerces an unknown class to a safe default", () => {
   const tool = getTool("asset_class_detail");
   assert.ok(tool);
-  const res = tool!.run({ principal: ana }, { assetClass: "'; DROP TABLE positions; --" });
-  assert.ok(JSON.stringify(res.cards).includes("Renda Fixa"));
+  const bad = tool!.params.parse({ assetClass: "'; DROP TABLE positions; --" }) as { assetClass: string };
+  assert.equal(bad.assetClass, "Renda Fixa");
+  const ok = tool!.params.parse({ assetClass: "Fundos" }) as { assetClass: string };
+  assert.equal(ok.assetClass, "Fundos");
 });
 
-test("asset_class_detail honors a valid class", () => {
-  const tool = getTool("asset_class_detail");
-  const res = tool!.run({ principal: ana }, { assetClass: "Fundos" });
-  assert.ok(JSON.stringify(res.cards).includes("Fundos"));
-});
-
-test("top_clients clamps an out-of-range limit to [1, 20]", () => {
+test("top_clients schema clamps limit to [1, 20], coerces strings, defaults", () => {
   const tool = getTool("top_clients");
   assert.ok(tool);
-  const many = tool!.run({ principal: gestora }, { limit: 9999 });
-  const table = many.cards.find((c) => c.type === "table") as { rows: unknown[] };
-  assert.ok(table.rows.length <= 20, `expected <= 20 rows, got ${table.rows.length}`);
+  const limit = (p: unknown) => (tool!.params.parse(p) as { limit: number }).limit;
+  assert.equal(limit({ limit: 9999 }), 20);
+  assert.equal(limit({ limit: -5 }), 1);
+  assert.equal(limit({ limit: "7" }), 7);
+  assert.equal(limit({}), 5);
+});
 
-  const few = tool!.run({ principal: gestora }, { limit: -5 });
-  const table2 = few.cards.find((c) => c.type === "table") as { rows: unknown[] };
-  assert.ok(table2.rows.length >= 1);
+test("orchestrator applies the param schema end-to-end (limit is clamped)", async () => {
+  const res = await orchestrate(gestora, "meus 40 maiores clientes");
+  assert.equal(res.meta.tool, "top_clients");
+  const table = res.cards.find((c) => c.type === "table");
+  assert.ok(table && "rows" in table);
+  assert.ok((table as { rows: unknown[] }).rows.length <= 20);
 });

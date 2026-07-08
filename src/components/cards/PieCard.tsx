@@ -13,7 +13,9 @@ export function PieCard({ spec }: { spec: PieCardSpec }) {
   return (
     <CardShell title={spec.title} caption={spec.caption} className="col-span-full lg:col-span-2">
       <div className="mt-3 flex flex-col items-center gap-4 sm:flex-row">
-        <div className="h-[200px] w-[200px] shrink-0">
+        {/* The legend list below conveys the same data as text, so the SVG is
+            redundant for assistive tech. */}
+        <div className="h-[200px] w-[200px] shrink-0" aria-hidden="true">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie

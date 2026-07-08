@@ -15,6 +15,8 @@ export interface AuditEntry {
   advisorId: string | null;
   tool: string;
   outcome: AuditOutcome;
+  /** Which selector chose the tool — the LLM-fallback rate is a key ops metric. */
+  engine?: "rule-based" | "anthropic";
   params?: Record<string, unknown>;
   detail?: string;
 }

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Principal, Role, AssetClass } from "@/lib/data/types";
 import { ASSET_CLASSES } from "@/lib/data/types";
 import * as data from "@/lib/data/secure-access";
@@ -19,14 +20,21 @@ export interface ToolDef {
   requiredRole?: Role;
   /** Keywords for the offline rule-based router (PT-BR). */
   keywords: string[];
-  /** JSON schema of parameters, used as the Anthropic tool input_schema. */
-  jsonSchema: Record<string, unknown>;
+  /**
+   * The single source of truth for this tool's parameters. The orchestrator
+   * validates the model/router-supplied input against this Zod schema BEFORE
+   * `run` executes, so `run` always receives already-safe, typed params and no
+   * tool has to re-implement its own defensive checks. Also drives the Anthropic
+   * tool input_schema (see anthropic.ts).
+   */
+  params: z.ZodTypeAny;
   /** Extract parameters from raw text for the offline router. */
   extract?: (text: string) => Record<string, unknown>;
-  run: (ctx: ToolContext, params: Record<string, unknown>) => ToolResult;
+  /** May be sync today or async once the store becomes a real database. */
+  run: (ctx: ToolContext, params: Record<string, unknown>) => ToolResult | Promise<ToolResult>;
 }
 
-const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
+const NO_PARAMS = z.object({}).strip();
 
 function detectAssetClass(text: string): AssetClass | null {
   const t = text.toLowerCase();
@@ -48,7 +56,7 @@ const portfolioOverview: ToolDef = {
   description:
     "Resumo geral da carteira em escopo: patrimônio sob custódia (AUM), número de clientes, captação do mês e alocação por classe de ativo. Use para pedidos amplos como 'resumo da minha carteira', 'visão geral', 'como está meu portfólio'.",
   keywords: ["resumo", "visão geral", "visao geral", "panorama", "portfólio", "portfolio", "carteira", "overview", "como está", "como estao"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const scope = data.getScope(principal);
     const aum = data.totalAum(principal);
@@ -104,7 +112,7 @@ const allocationByClass: ToolDef = {
   description:
     "Distribuição do portfólio por classe de ativo (Renda Fixa, Renda Variável, Fundos, Multimercado, Previdência, Caixa). Use para 'alocação', 'distribuição do portfólio', 'como está dividido'.",
   keywords: ["alocação", "alocacao", "distribuição", "distribuicao", "dividido", "classe de ativo", "classes", "mix"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const allocation = data.allocationByAssetClass(principal);
     const total = allocation.reduce((a, b) => a + b.value, 0);
@@ -137,31 +145,19 @@ const assetClassDetail: ToolDef = {
   description:
     "Detalhe de uma classe de ativo específica: total investido, participação no portfólio e quebra por produto. Informe o parâmetro assetClass. Use para 'resumo da renda fixa', 'quanto tenho em ações', 'detalhe da previdência'.",
   keywords: ["renda fixa", "renda variável", "renda variavel", "ações", "acoes", "previdência", "previdencia", "multimercado", "fundos", "caixa", "detalhe", "quanto tenho em"],
-  jsonSchema: {
-    type: "object",
-    properties: {
-      assetClass: {
-        type: "string",
-        enum: ASSET_CLASSES,
-        description: "A classe de ativo a detalhar.",
-      },
-    },
-    required: ["assetClass"],
-    additionalProperties: false,
-  },
+  // Unknown/absent class is coerced to a safe default by the schema itself.
+  params: z.object({
+    assetClass: z
+      .enum(ASSET_CLASSES as unknown as [AssetClass, ...AssetClass[]])
+      .catch("Renda Fixa"),
+  }),
   extract: (text) => {
     const cls = detectAssetClass(text);
     return cls ? { assetClass: cls } : {};
   },
   run: ({ principal }, params) => {
-    // Validate the model/tool-supplied value against the allowed enum rather than
-    // trusting the cast — unknown input falls back to a safe default.
-    const requested = params.assetClass;
-    const assetClass: AssetClass = (ASSET_CLASSES as string[]).includes(
-      requested as string
-    )
-      ? (requested as AssetClass)
-      : "Renda Fixa";
+    // params is already validated against the schema above.
+    const { assetClass } = params as { assetClass: AssetClass };
     const summary = data.assetClassSummary(principal, assetClass);
     return {
       narrative: `Em **${assetClass}** há ${formatBRL(summary.total, {
@@ -192,23 +188,21 @@ const topClients: ToolDef = {
   description:
     "Maiores clientes por patrimônio no escopo, com segmento e perfil de risco. Parâmetro opcional limit (padrão 5). Use para 'meus maiores clientes', 'top 10 clientes'.",
   keywords: ["maiores clientes", "top clientes", "principais clientes", "ranking de clientes", "maiores contas"],
-  jsonSchema: {
-    type: "object",
-    properties: {
-      limit: { type: "integer", minimum: 1, maximum: 20, description: "Quantos clientes retornar." },
-    },
-    additionalProperties: false,
-  },
+  // The schema coerces, defaults, then clamps to a safe integer range [1, 20];
+  // run trusts it. (min/max would reject → default; a transform actually clamps.)
+  params: z.object({
+    limit: z
+      .coerce.number()
+      .int()
+      .catch(5)
+      .transform((n) => Math.min(20, Math.max(1, n))),
+  }),
   extract: (text) => {
     const m = text.match(/\b(\d{1,2})\b/);
-    return m ? { limit: Math.min(20, Math.max(1, Number(m[1]))) } : {};
+    return m ? { limit: Number(m[1]) } : {};
   },
   run: ({ principal }, params) => {
-    // Clamp the model/tool-supplied limit to a safe integer range [1, 20].
-    const rawLimit = Number(params.limit);
-    const limit = Number.isFinite(rawLimit)
-      ? Math.min(20, Math.max(1, Math.floor(rawLimit)))
-      : 5;
+    const { limit } = params as { limit: number };
     const clients = data.topClients(principal, limit);
     return {
       narrative: `Top ${clients.length} clientes por patrimônio.`,
@@ -239,7 +233,7 @@ const netNewMoney: ToolDef = {
   description:
     "Captação líquida (net new money) por mês no escopo, com total do período. Use para 'captação', 'quanto captei', 'evolução da captação'.",
   keywords: ["captação", "captacao", "captei", "net new money", "nnm", "entrada de recursos", "resgates"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const series = data.netNewMoneyByMonth(principal);
     const total = data.netNewMoneyTotal(principal);
@@ -269,7 +263,7 @@ const riskDistribution: ToolDef = {
   description:
     "Distribuição do patrimônio por perfil de risco (suitability): Conservador, Moderado, Arrojado. Use para 'perfil de risco', 'suitability', 'aderência de risco'.",
   keywords: ["perfil de risco", "risco", "suitability", "conservador", "moderado", "arrojado", "aderência"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const dist = data.riskDistribution(principal);
     return {
@@ -289,7 +283,7 @@ const teamRevenue: ToolDef = {
     "RESTRITO A GESTORES. Receita bruta, comissões dos assessores e margem da empresa (YTD), com quebra por assessor. Use para 'faturamento da equipe', 'receita', 'comissões'.",
   requiredRole: "manager",
   keywords: ["receita", "faturamento", "comissão", "comissao", "comissões", "comissoes", "margem", "rentabilidade da equipe", "quanto a empresa"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const summary = data.commissionSummary(principal);
     const byAdvisor = data.revenueByAdvisor(principal);
@@ -337,7 +331,7 @@ const commissionByClass: ToolDef = {
     "RESTRITO A GESTORES. Receita e comissão por classe de ativo (YTD). Use para 'comissão por produto', 'de onde vem a receita'.",
   requiredRole: "manager",
   keywords: ["comissão por classe", "receita por classe", "receita por produto", "de onde vem a receita", "margem por produto"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const summary = data.commissionSummary(principal);
     return {
@@ -371,7 +365,7 @@ const teamRanking: ToolDef = {
     "RESTRITO A GESTORES. Ranking dos assessores por AUM e por captação líquida. Use para 'ranking da equipe', 'AUM por assessor', 'quem captou mais'.",
   requiredRole: "manager",
   keywords: ["ranking", "por assessor", "equipe", "quem captou", "aum por assessor", "melhores assessores", "comparar assessores"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const aum = data.aumByAdvisor(principal);
     const nnm = data.netNewMoneyByAdvisor(principal);

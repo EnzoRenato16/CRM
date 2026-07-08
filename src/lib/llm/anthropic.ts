@@ -1,7 +1,56 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { z } from "zod";
 import type { Principal } from "@/lib/data/types";
 import { toolsForRole } from "@/lib/tools/registry";
 import type { Selection } from "./rule-based";
+
+// Minimal, dependency-free Zod → JSON-Schema for the tool params we use (empty
+// object, string enum, integer). The tool's Zod schema stays the single source
+// of truth; this only describes the params to the model. Runtime validation is
+// still done by Zod server-side, so this description is advisory.
+type ZodInternal = {
+  _def: {
+    typeName: string;
+    innerType?: z.ZodTypeAny;
+    schema?: z.ZodTypeAny;
+    values?: readonly string[];
+    checks?: Array<{ kind: string }>;
+    shape?: () => Record<string, z.ZodTypeAny>;
+  };
+};
+
+function unwrap(schema: z.ZodTypeAny): ZodInternal {
+  let current = schema as unknown as ZodInternal;
+  const wrappers = new Set(["ZodCatch", "ZodDefault", "ZodOptional", "ZodNullable"]);
+  while (current?._def) {
+    const { typeName, innerType, schema: inner } = current._def;
+    if (wrappers.has(typeName) && innerType) current = innerType as unknown as ZodInternal;
+    else if (typeName === "ZodEffects" && inner) current = inner as unknown as ZodInternal;
+    else break;
+  }
+  return current;
+}
+
+function fieldSchema(schema: z.ZodTypeAny): Record<string, unknown> {
+  const def = unwrap(schema)._def;
+  if (def.typeName === "ZodEnum") return { type: "string", enum: def.values ?? [] };
+  if (def.typeName === "ZodNumber") {
+    return { type: (def.checks ?? []).some((c) => c.kind === "int") ? "integer" : "number" };
+  }
+  if (def.typeName === "ZodBoolean") return { type: "boolean" };
+  return { type: "string" };
+}
+
+export function zodToInputSchema(schema: z.ZodTypeAny): Anthropic.Tool.InputSchema {
+  const def = unwrap(schema)._def;
+  const properties: Record<string, unknown> = {};
+  if (def.typeName === "ZodObject" && def.shape) {
+    for (const [key, value] of Object.entries(def.shape())) {
+      properties[key] = fieldSchema(value);
+    }
+  }
+  return { type: "object", properties } as Anthropic.Tool.InputSchema;
+}
 
 /**
  * Optional LLM-backed tool selection.
@@ -33,13 +82,19 @@ export async function selectToolAnthropic(
   principal: Principal,
   message: string
 ): Promise<Selection | null> {
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  // Interactive chat: fail fast so the deterministic fallback kicks in quickly
+  // instead of the SDK's 10-minute default with 2 retries pinning the request.
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    timeout: 8000,
+    maxRetries: 1,
+  });
   const allowed = toolsForRole(principal.role);
 
   const tools = allowed.map((t) => ({
     name: t.name,
     description: t.description,
-    input_schema: t.jsonSchema as Anthropic.Tool.InputSchema,
+    input_schema: zodToInputSchema(t.params),
   }));
 
   const res = await client.messages.create({

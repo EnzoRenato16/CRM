@@ -24,9 +24,11 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    bottomRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
   }, [messages, loading]);
 
   async function send(text: string) {
@@ -52,6 +54,8 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
       setMessages((m) => [...m, { id: seq.current++, kind: "error", text: "Erro de rede." }]);
     } finally {
       setLoading(false);
+      // Return focus to the composer so keyboard users can keep asking.
+      inputRef.current?.focus();
     }
   }
 
@@ -60,7 +64,13 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-5xl px-4 py-6">
+        <div
+          className="mx-auto w-full max-w-5xl px-4 py-6"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="Conversa com o copiloto"
+        >
           {empty ? (
             <EmptyState userName={userName} role={role} suggestions={suggestions} onPick={send} />
           ) : (
@@ -96,6 +106,8 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
                 }
                 className="w-full bg-transparent px-4 py-3 text-sm outline-none"
                 maxLength={500}
+                ref={inputRef}
+                aria-label="Escreva a sua pergunta"
               />
             </div>
             <button
@@ -219,7 +231,7 @@ function Avatar() {
 
 function Thinking() {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3" role="status" aria-label="Gerando resposta">
       <Avatar />
       <div className="flex items-center gap-1.5 rounded-2xl rounded-tl-md border border-ink-200 bg-white px-4 py-3 shadow-sm dark:border-ink-800 dark:bg-ink-900">
         {[0, 1, 2].map((i) => (
@@ -229,6 +241,7 @@ function Thinking() {
             style={{ animationDelay: `${i * 120}ms` }}
           />
         ))}
+        <span className="sr-only">Gerando resposta…</span>
       </div>
     </div>
   );

@@ -26,8 +26,15 @@ export function CardRenderer({ card }: { card: CardSpec }) {
     case "text":
       return <TextCard spec={card} />;
     default:
-      return null;
+      // Exhaustiveness: adding a card variant without a renderer is a compile
+      // error here (card is narrowed to `never`) instead of a silent blank.
+      return assertNeverCard(card);
   }
+}
+
+function assertNeverCard(card: never): null {
+  void card;
+  return null;
 }
 
 export function CardGrid({ cards }: { cards: CardSpec[] }) {
