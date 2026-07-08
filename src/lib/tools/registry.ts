@@ -262,7 +262,7 @@ const riskDistribution: ToolDef = {
   name: "risk_distribution",
   description:
     "Distribuição do patrimônio por perfil de risco (suitability): Conservador, Moderado, Arrojado. Use para 'perfil de risco', 'suitability', 'aderência de risco'.",
-  keywords: ["perfil de risco", "risco", "suitability", "conservador", "moderado", "arrojado", "aderência"],
+  keywords: ["perfil de risco", "distribuição de risco", "distribuicao de risco", "risco", "conservador", "moderado", "arrojado"],
   params: NO_PARAMS,
   run: ({ principal }) => {
     const dist = data.riskDistribution(principal);
@@ -379,6 +379,207 @@ const teamRanking: ToolDef = {
   },
 };
 
+// --- Suitability adherence (compliance, both roles) --------------------------
+
+const suitabilityAdherence: ToolDef = {
+  name: "suitability_adherence",
+  description:
+    "Aderência de suitability: quanto do patrimônio está investido em produtos compatíveis com o perfil de risco de cada cliente, e a lista de clientes desenquadrados (exposição acima do perfil). Use para 'aderência de suitability', 'enquadramento', 'clientes desenquadrados', 'compliance de risco'.",
+  keywords: ["suitability", "aderência", "aderencia", "enquadramento", "desenquadrado", "desenquadramento", "adequação de perfil", "adequacao de perfil", "compliance de risco"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const s = data.suitabilityAdherence(principal);
+    const cards: CardSpec[] = [
+      {
+        type: "kpi",
+        title: "AUM aderente ao perfil",
+        value: formatPercent(s.pctAdherent),
+        accent: s.pctAdherent >= 0.9 ? "emerald" : s.pctAdherent >= 0.75 ? "amber" : "rose",
+        caption: `${formatBRL(s.adherentAum, { compact: true })} aderente · ${formatBRL(s.misalignedAum, { compact: true })} acima do perfil`,
+      },
+      {
+        type: "pie",
+        title: "Enquadramento por AUM",
+        valueFormat: "brl_compact",
+        data: [
+          { label: "Aderente", value: s.adherentAum },
+          { label: "Acima do perfil", value: s.misalignedAum },
+        ],
+      },
+    ];
+    if (s.misalignedClients.length > 0) {
+      cards.push({
+        type: "table",
+        title: "Clientes desenquadrados (exposição acima do perfil)",
+        columns: [
+          { key: "name", label: "Cliente", align: "left" },
+          { key: "profile", label: "Perfil", align: "left" },
+          { key: "worstClass", label: "Classe acima do perfil", align: "left" },
+          { key: "misalignedAum", label: "Exposição", align: "right", format: "brl_compact" },
+        ],
+        rows: s.misalignedClients.slice(0, 10).map((c) => ({
+          name: c.name,
+          profile: c.profile,
+          worstClass: c.worstClass,
+          misalignedAum: c.misalignedAum,
+        })),
+      });
+    } else {
+      cards.push({
+        type: "text",
+        title: "Tudo enquadrado",
+        tone: "neutral",
+        body: "Nenhum cliente com exposição acima do seu perfil de risco. **100% aderente.**",
+      });
+    }
+    return {
+      narrative: `**${formatPercent(s.pctAdherent)}** do patrimônio está aderente ao perfil de suitability dos clientes.`,
+      cards,
+    };
+  },
+};
+
+// --- Portfolio performance / rentabilidade (both roles) ----------------------
+
+const portfolioPerformance: ToolDef = {
+  name: "portfolio_performance",
+  description:
+    "Rentabilidade da carteira no período: retorno acumulado, comparação com o CDI e a evolução mês a mês. Use para 'rentabilidade', 'quanto rendeu', 'retorno da carteira', 'performance', 'rendimento'.",
+  keywords: ["rentabilidade", "retorno", "rendimento", "performance", "quanto rendeu", "quanto rendi", "valorização", "valorizacao", "rende"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const series = data.performanceByMonth(principal);
+    const cum = data.cumulativeReturn(principal);
+    const cdiCum = data.benchmarkCumulative();
+    const excess = cum - cdiCum;
+    return {
+      narrative: `Retorno acumulado de **${formatPercent(cum)}** no período (CDI: ${formatPercent(cdiCum)}).`,
+      cards: [
+        {
+          type: "kpi",
+          title: "Retorno acumulado (período)",
+          value: formatPercent(cum),
+          accent: cum >= 0 ? "emerald" : "rose",
+          delta: { label: cum >= 0 ? "positivo" : "negativo", direction: cum >= 0 ? "up" : "down" },
+        },
+        {
+          type: "kpi",
+          title: "vs CDI",
+          value: `${excess >= 0 ? "+" : ""}${formatPercent(excess)}`,
+          accent: excess >= 0 ? "emerald" : "amber",
+          delta: { label: excess >= 0 ? "acima do CDI" : "abaixo do CDI", direction: excess >= 0 ? "up" : "down" },
+          caption: `CDI no período: ${formatPercent(cdiCum)}`,
+        },
+        {
+          type: "line",
+          title: "Rentabilidade mês a mês",
+          valueFormat: "percent",
+          data: series.map((p) => ({ label: formatMonth(p.label), value: p.value })),
+        },
+      ],
+    };
+  },
+};
+
+// --- Client detail / drill-down (both roles, scope-aware) --------------------
+
+const clientDetail: ToolDef = {
+  name: "client_detail",
+  description:
+    "Resumo da carteira de um cliente específico (patrimônio, perfil, segmento e alocação), respeitando o escopo do usuário. Informe o nome do cliente. Use para 'resumo do cliente Fulano', 'carteira do cliente X', 'posição do cliente'.",
+  keywords: ["resumo do cliente", "carteira do cliente", "detalhe do cliente", "conta do cliente", "posição do cliente", "posicao do cliente", "dados do cliente", "cliente chamado"],
+  params: z.object({ query: z.string().catch("") }),
+  extract: (text) => ({ query: text }),
+  run: ({ principal }, params) => {
+    const query = (params as { query?: string }).query ?? "";
+    const client = data.findClient(principal, query);
+    if (!client) {
+      return {
+        narrative: "",
+        cards: [
+          {
+            type: "text",
+            title: "Cliente não encontrado",
+            tone: "warning",
+            body: "Não encontrei um cliente com esse nome na sua carteira. Confira o nome — você só tem acesso aos seus próprios clientes.",
+          },
+        ],
+      };
+    }
+    return {
+      narrative: `**${client.name}** — ${client.segment}, perfil ${client.riskProfile} · ${formatBRL(client.aum, { compact: true })} sob custódia.`,
+      cards: [
+        {
+          type: "kpi",
+          title: "Patrimônio do cliente",
+          value: formatBRL(client.aum, { compact: true }),
+          caption: `${client.segment} · ${client.riskProfile}`,
+          accent: "brand",
+        },
+        {
+          type: "pie",
+          title: `Alocação — ${client.name}`,
+          valueFormat: "brl_compact",
+          data: client.allocation,
+        },
+        {
+          type: "table",
+          title: "Principais produtos",
+          columns: [
+            { key: "label", label: "Produto", align: "left" },
+            { key: "value", label: "Valor", align: "right", format: "brl_compact" },
+          ],
+          rows: client.topProducts.map((p) => ({ label: p.label, value: p.value })),
+        },
+      ],
+    };
+  },
+};
+
+// --- Revenue by client segment (manager-only) --------------------------------
+
+const revenueBySegment: ToolDef = {
+  name: "revenue_by_segment",
+  description:
+    "RESTRITO A GESTORES. Receita, comissão e margem por segmento de cliente (Varejo, Private, Corporate). Use para 'receita por segmento', 'faturamento por tipo de cliente', 'de onde vem a receita por segmento'.",
+  requiredRole: "manager",
+  keywords: ["por segmento", "segmento", "varejo", "private", "corporate", "receita por segmento", "por tipo de cliente", "household"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const rows = data.revenueBySegment(principal);
+    return {
+      narrative: "Receita bruta e margem por segmento de cliente (YTD).",
+      cards: [
+        {
+          type: "bar",
+          title: "Receita bruta por segmento",
+          orientation: "horizontal",
+          valueFormat: "brl_compact",
+          data: rows.map((r) => ({ label: r.segment, value: r.revenue })),
+        },
+        {
+          type: "table",
+          title: "Receita, comissão e margem por segmento",
+          columns: [
+            { key: "segment", label: "Segmento", align: "left" },
+            { key: "aum", label: "AUM", align: "right", format: "brl_compact" },
+            { key: "revenue", label: "Receita YTD", align: "right", format: "brl_compact" },
+            { key: "commission", label: "Comissão YTD", align: "right", format: "brl_compact" },
+            { key: "margin", label: "Margem YTD", align: "right", format: "brl_compact" },
+          ],
+          rows: rows.map((r) => ({
+            segment: r.segment,
+            aum: r.aum,
+            revenue: r.revenue,
+            commission: r.commission,
+            margin: r.margin,
+          })),
+        },
+      ],
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   portfolioOverview,
   allocationByClass,
@@ -386,9 +587,13 @@ export const TOOLS: ToolDef[] = [
   topClients,
   netNewMoney,
   riskDistribution,
+  suitabilityAdherence,
+  portfolioPerformance,
+  clientDetail,
   teamRevenue,
   commissionByClass,
   teamRanking,
+  revenueBySegment,
 ];
 
 export function getTool(name: string): ToolDef | undefined {

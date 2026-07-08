@@ -1,9 +1,11 @@
-import { advisors, clients, positions, cashFlows, TEAM } from "./seed";
+import { advisors, clients, positions, cashFlows, performance, CDI_BY_MONTH, TEAM } from "./seed";
 import type {
   Advisor,
   Client,
   PositionRecord,
   CashFlowRecord,
+  PerformanceRecord,
+  BenchmarkPoint,
 } from "./types";
 
 /**
@@ -22,4 +24,6 @@ export const db = {
   clients: clients as ReadonlyArray<Client>,
   positions: positions as ReadonlyArray<PositionRecord>,
   cashFlows: cashFlows as ReadonlyArray<CashFlowRecord>,
+  performance: performance as ReadonlyArray<PerformanceRecord>,
+  cdi: CDI_BY_MONTH as ReadonlyArray<BenchmarkPoint>,
 };

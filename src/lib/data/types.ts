@@ -42,6 +42,26 @@ export const ASSET_CLASSES: AssetClass[] = [
 export type Segment = "Varejo" | "Private" | "Corporate";
 export type RiskProfile = "Conservador" | "Moderado" | "Arrojado";
 
+/** Ordinal risk level (1 = most conservative) shared by profiles and products. */
+export const RISK_PROFILE_LEVEL: Record<RiskProfile, 1 | 2 | 3> = {
+  Conservador: 1,
+  Moderado: 2,
+  Arrojado: 3,
+};
+
+/**
+ * Risk level of each asset class, used for suitability adherence: a position is
+ * "enquadrada" when the product's level is <= the client's profile level.
+ */
+export const ASSET_CLASS_RISK_LEVEL: Record<AssetClass, 1 | 2 | 3> = {
+  Caixa: 1,
+  "Renda Fixa": 1,
+  Previdência: 2,
+  Fundos: 2,
+  Multimercado: 3,
+  "Renda Variável": 3,
+};
+
 export interface Advisor {
   id: string;
   name: string;
@@ -93,6 +113,21 @@ export interface CashFlowRecord {
   month: string;
   /** Captação líquida (net new money) in BRL. */
   netNewMoney: number;
+}
+
+/** Monthly portfolio return (rentabilidade) per advisor, as a fraction. */
+export interface PerformanceRecord {
+  advisorId: string;
+  /** ISO month, e.g. "2026-06". */
+  month: string;
+  /** Monthly return as a fraction, e.g. 0.012 = +1.2%. */
+  returnPct: number;
+}
+
+/** A benchmark point (e.g. CDI), month → return fraction. */
+export interface BenchmarkPoint {
+  month: string;
+  returnPct: number;
 }
 
 /** A named numeric series point used by most aggregation results. */

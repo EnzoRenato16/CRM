@@ -6,7 +6,10 @@ import type {
   CashFlowRecord,
   SeriesPoint,
   AssetClass,
+  Segment,
+  RiskProfile,
 } from "./types";
+import { ASSET_CLASS_RISK_LEVEL, RISK_PROFILE_LEVEL } from "./types";
 
 /**
  * =============================================================================
@@ -237,6 +240,152 @@ export function netNewMoneyTotal(principal: Principal): number {
   return sumBy(scopedCashFlows(principal), (f) => f.netNewMoney);
 }
 
+// --- Suitability adherence (compliance) --------------------------------------
+
+export interface SuitabilityResult {
+  /** Share of AUM invested within the client's risk profile (0..1). */
+  pctAdherent: number;
+  adherentAum: number;
+  misalignedAum: number;
+  /** Clients holding products riskier than their profile, worst first. */
+  misalignedClients: {
+    name: string;
+    profile: RiskProfile;
+    misalignedAum: number;
+    worstClass: AssetClass;
+  }[];
+}
+
+export function suitabilityAdherence(principal: Principal): SuitabilityResult {
+  const clientById = new Map(scopedClients(principal).map((c) => [c.id, c]));
+  let adherentAum = 0;
+  let misalignedAum = 0;
+  const perClient = new Map<
+    string,
+    { name: string; profile: RiskProfile; misalignedAum: number; worstLevel: number; worstClass: AssetClass }
+  >();
+
+  for (const p of scopedPositions(principal)) {
+    const client = clientById.get(p.clientId);
+    if (!client) continue;
+    const clientLevel = RISK_PROFILE_LEVEL[client.riskProfile];
+    const productLevel = ASSET_CLASS_RISK_LEVEL[p.assetClass];
+    if (productLevel <= clientLevel) {
+      adherentAum += p.marketValue;
+    } else {
+      misalignedAum += p.marketValue;
+      const cur =
+        perClient.get(client.id) ??
+        { name: client.name, profile: client.riskProfile, misalignedAum: 0, worstLevel: 0, worstClass: p.assetClass };
+      cur.misalignedAum += p.marketValue;
+      if (productLevel > cur.worstLevel) {
+        cur.worstLevel = productLevel;
+        cur.worstClass = p.assetClass;
+      }
+      perClient.set(client.id, cur);
+    }
+  }
+
+  const total = adherentAum + misalignedAum || 1;
+  return {
+    pctAdherent: adherentAum / total,
+    adherentAum,
+    misalignedAum,
+    misalignedClients: [...perClient.values()]
+      .map(({ name, profile, misalignedAum: aum, worstClass }) => ({ name, profile, misalignedAum: aum, worstClass }))
+      .sort((a, b) => b.misalignedAum - a.misalignedAum),
+  };
+}
+
+// --- Portfolio performance (rentabilidade) -----------------------------------
+
+/** Monthly return series within scope. Advisor: own; manager: AUM-weighted avg. */
+export function performanceByMonth(principal: Principal): SeriesPoint[] {
+  if (principal.role === "manager") {
+    const aumByAdvisor = new Map<string, number>();
+    for (const p of db.positions) {
+      aumByAdvisor.set(p.advisorId, (aumByAdvisor.get(p.advisorId) ?? 0) + p.marketValue);
+    }
+    const totalAumAll = [...aumByAdvisor.values()].reduce((a, b) => a + b, 0) || 1;
+    const byMonth = new Map<string, number>();
+    for (const r of db.performance) {
+      const weight = (aumByAdvisor.get(r.advisorId) ?? 0) / totalAumAll;
+      byMonth.set(r.month, (byMonth.get(r.month) ?? 0) + r.returnPct * weight);
+    }
+    return [...byMonth.entries()]
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+  return db.performance
+    .filter((r) => r.advisorId === principal.advisorId)
+    .map((r) => ({ label: r.month, value: r.returnPct }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Compounded return over the period within scope. */
+export function cumulativeReturn(principal: Principal): number {
+  return performanceByMonth(principal).reduce((acc, p) => acc * (1 + p.value), 1) - 1;
+}
+
+/** CDI benchmark series (public — carries no advisor-scoped or sensitive data). */
+export function benchmarkByMonth(): SeriesPoint[] {
+  return db.cdi
+    .map((c) => ({ label: c.month, value: c.returnPct }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+export function benchmarkCumulative(): number {
+  return db.cdi.reduce((acc, c) => acc * (1 + c.returnPct), 1) - 1;
+}
+
+// --- Client lookup / drill-down (scope-aware) --------------------------------
+
+export interface ClientDetail {
+  name: string;
+  segment: Segment;
+  riskProfile: RiskProfile;
+  aum: number;
+  allocation: SeriesPoint[];
+  topProducts: SeriesPoint[];
+}
+
+function normalizeName(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+/**
+ * Find a client by name WITHIN the caller's scope. An advisor searching for
+ * another advisor's client gets null — we never reveal that the client exists.
+ */
+export function findClient(principal: Principal, query: string): ClientDetail | null {
+  const qTokens = new Set(normalizeName(query).split(/\s+/).filter((t) => t.length > 1));
+  if (qTokens.size === 0) return null;
+
+  let best: Client | null = null;
+  let bestScore = 0;
+  for (const c of scopedClients(principal)) {
+    const nameTokens = normalizeName(c.name).split(/\s+/);
+    const score = nameTokens.reduce((acc, t) => acc + (qTokens.has(t) ? 1 : 0), 0);
+    if (score > bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+  if (!best || bestScore === 0) return null;
+
+  const pos = scopedPositions(principal).filter((p) => p.clientId === best!.id);
+  return {
+    name: best.name,
+    segment: best.segment,
+    riskProfile: best.riskProfile,
+    aum: sumBy(pos, (p) => p.marketValue),
+    allocation: groupSum(pos, (p) => p.assetClass, (p) => p.marketValue).sort((a, b) => b.value - a.value),
+    topProducts: groupSum(pos, (p) => p.product, (p) => p.marketValue)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5),
+  };
+}
+
 // =============================================================================
 //  MANAGER-ONLY READS  (fail-closed; advisors get an AuthorizationError)
 //  These are the only methods that expose revenue/commission or another
@@ -335,4 +484,30 @@ export function firmTotals(principal: Principal) {
     advisors: db.advisors.length,
     grossRevenueYtd: sumBy(db.positions, (p) => p.grossRevenueYtd),
   };
+}
+
+export interface SegmentRevenueRow {
+  segment: Segment;
+  aum: number;
+  revenue: number;
+  commission: number;
+  margin: number;
+}
+
+/** Revenue, commission and margin by client segment — commercial, manager-only. */
+export function revenueBySegment(principal: Principal): SegmentRevenueRow[] {
+  assertManager(principal, "receita por segmento de cliente");
+  const clientSegment = new Map(db.clients.map((c) => [c.id, c.segment]));
+  const bySegment = new Map<Segment, { aum: number; revenue: number; commission: number }>();
+  for (const p of db.positions) {
+    const segment = clientSegment.get(p.clientId) ?? "Varejo";
+    const cur = bySegment.get(segment) ?? { aum: 0, revenue: 0, commission: 0 };
+    cur.aum += p.marketValue;
+    cur.revenue += p.grossRevenueYtd;
+    cur.commission += p.advisorCommissionYtd;
+    bySegment.set(segment, cur);
+  }
+  return [...bySegment.entries()]
+    .map(([segment, v]) => ({ segment, ...v, margin: v.revenue - v.commission }))
+    .sort((a, b) => b.revenue - a.revenue);
 }

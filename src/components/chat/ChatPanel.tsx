@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AssistantResponse } from "@/lib/cards/schema";
 import { CardGrid } from "@/components/cards/CardRenderer";
 import { renderInlineMarkdown } from "@/components/cards/markdown";
+import { printReport } from "@/lib/report";
 
 type Message =
   | { id: number; kind: "user"; text: string }
@@ -75,9 +76,19 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
             <EmptyState userName={userName} role={role} suggestions={suggestions} onPick={send} />
           ) : (
             <div className="space-y-6">
-              {messages.map((m) => (
-                <MessageView key={m.id} message={m} />
-              ))}
+              {messages.map((m, i) => {
+                const prev = messages[i - 1];
+                const question = m.kind === "assistant" && prev?.kind === "user" ? prev.text : undefined;
+                return (
+                  <MessageView
+                    key={m.id}
+                    message={m}
+                    scopeLabel={scopeLabel}
+                    userName={userName}
+                    question={question}
+                  />
+                );
+              })}
               {loading && <Thinking />}
               <div ref={bottomRef} />
             </div>
@@ -179,7 +190,17 @@ function EmptyState({
   );
 }
 
-function MessageView({ message }: { message: Message }) {
+function MessageView({
+  message,
+  scopeLabel,
+  userName,
+  question,
+}: {
+  message: Message;
+  scopeLabel: string;
+  userName: string;
+  question?: string;
+}) {
   if (message.kind === "user") {
     return (
       <div className="flex justify-end">
@@ -210,9 +231,21 @@ function MessageView({ message }: { message: Message }) {
       <div className="sm:pl-11">
         <CardGrid cards={response.cards} />
         {response.meta.tool !== "help" && response.meta.tool !== "access_denied" && (
-          <p className="mt-2 text-[11px] text-ink-400">
-            gerado por IA · ferramenta <code className="rounded bg-ink-100 px-1 dark:bg-ink-800">{response.meta.tool}</code>
-          </p>
+          <div className="mt-2 flex items-center gap-3">
+            <p className="text-[11px] text-ink-400">
+              gerado por IA · ferramenta <code className="rounded bg-ink-100 px-1 dark:bg-ink-800">{response.meta.tool}</code>
+            </p>
+            <button
+              type="button"
+              onClick={() => printReport(response, { scopeLabel, userName, userQuestion: question })}
+              className="inline-flex items-center gap-1 rounded-md border border-ink-200 px-2 py-1 text-[11px] font-medium text-ink-500 transition hover:border-brand-400 hover:text-brand-600 dark:border-ink-700 dark:hover:border-brand-500"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M6 14h12v8H6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Exportar PDF
+            </button>
+          </div>
         )}
       </div>
     </div>

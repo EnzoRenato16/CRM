@@ -11,18 +11,18 @@ type Engine = "rule-based" | "anthropic";
 export const SUGGESTIONS: Record<Role, string[]> = {
   advisor: [
     "Resumo da minha carteira",
-    "Alocação por classe de ativo",
-    "Resumo da minha renda fixa",
-    "Minha captação líquida no período",
+    "Rentabilidade da minha carteira",
+    "Aderência de suitability",
     "Meus 5 maiores clientes",
-    "Distribuição por perfil de risco",
+    "Minha captação líquida no período",
+    "Alocação por classe de ativo",
   ],
   manager: [
     "Faturamento da equipe",
-    "Receita por classe de ativo",
+    "Receita por segmento de cliente",
+    "Rentabilidade da mesa",
     "Ranking dos assessores",
-    "Captação da equipe",
-    "Alocação consolidada da mesa",
+    "Aderência de suitability da mesa",
     "Comissões pagas no ano",
   ],
 };

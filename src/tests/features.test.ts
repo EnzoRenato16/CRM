@@ -1,0 +1,95 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import type { Principal } from "../lib/data/types";
+import * as data from "../lib/data/secure-access";
+import { AuthorizationError } from "../lib/data/secure-access";
+import { orchestrate } from "../lib/llm/orchestrator";
+import { buildReportHtml } from "../lib/report";
+
+const ana: Principal = { userId: "U-ana", name: "Ana Souza", email: "ana@assessoria.com", role: "advisor", advisorId: "A-001" };
+const bruno: Principal = { userId: "U-bruno", name: "Bruno Lima", email: "bruno@assessoria.com", role: "advisor", advisorId: "A-002" };
+const gestora: Principal = { userId: "U-g", name: "Gabriela Mendes", email: "gestor@assessoria.com", role: "manager", advisorId: null };
+
+// --- Suitability adherence ---------------------------------------------------
+
+test("suitability adherence: valid ratio, AUM split reconciles, misaligned > 0", () => {
+  const s = data.suitabilityAdherence(ana);
+  assert.ok(s.pctAdherent >= 0 && s.pctAdherent <= 1);
+  assert.equal(Math.round(s.adherentAum + s.misalignedAum), Math.round(data.totalAum(ana)));
+  for (const c of s.misalignedClients) assert.ok(c.misalignedAum > 0);
+});
+
+// --- Portfolio performance ---------------------------------------------------
+
+test("performance is monthly within scope; cumulative + benchmark are finite", () => {
+  assert.equal(data.performanceByMonth(ana).length, 6);
+  assert.equal(data.performanceByMonth(gestora).length, 6);
+  assert.ok(Number.isFinite(data.cumulativeReturn(ana)));
+  assert.ok(Number.isFinite(data.benchmarkCumulative()));
+});
+
+// --- Revenue by segment (manager-only) ---------------------------------------
+
+test("revenue by segment is manager-only and reconciles to firm gross revenue", () => {
+  assert.throws(() => data.revenueBySegment(ana), AuthorizationError);
+  const rows = data.revenueBySegment(gestora);
+  assert.ok(rows.length >= 1);
+  const total = rows.reduce((a, r) => a + r.revenue, 0);
+  assert.equal(Math.round(total), Math.round(data.commissionSummary(gestora).grossRevenueYtd));
+});
+
+// --- Client lookup (scope-aware) ---------------------------------------------
+
+test("client lookup finds own client, null for gibberish, and never crosses scope", () => {
+  const mine = data.topClients(ana, 1)[0].name;
+  const found = data.findClient(ana, `resumo do cliente ${mine}`);
+  assert.equal(found?.name, mine);
+  assert.equal(data.findClient(ana, "resumo do cliente Zzyxwq Qwerty"), null);
+
+  // An advisor must never resolve ANOTHER advisor's client. Because lookups only
+  // ever search the caller's own book, a query for one of Bruno's clients can at
+  // most return one of Ana's own clients (e.g. a shared surname) — never Bruno's.
+  const anaNames = new Set(data.topClients(ana, 100).map((c) => c.name));
+  const brunoOnly = data
+    .topClients(bruno, 100)
+    .map((c) => c.name)
+    .find((n) => !anaNames.has(n));
+  assert.ok(brunoOnly, "expected a client exclusive to Bruno's book");
+  const crossed = data.findClient(ana, brunoOnly!);
+  assert.ok(
+    crossed === null || anaNames.has(crossed.name),
+    "advisor lookup must never return another advisor's client"
+  );
+});
+
+// --- PDF report builder ------------------------------------------------------
+
+test("PDF report HTML is well-formed and includes scope + a card value", async () => {
+  const res = await orchestrate(ana, "Resumo da minha carteira");
+  const html = buildReportHtml(res, { scopeLabel: res.meta.scope, userName: "Ana Souza", userQuestion: "Resumo da minha carteira" });
+  assert.ok(html.startsWith("<!doctype html>"));
+  assert.ok(html.includes("Advisor Copilot"));
+  assert.ok(html.includes(res.meta.scope));
+  assert.ok(html.includes("R$"));
+});
+
+// --- Orchestrator routing for the new intents --------------------------------
+
+test("new advisor intents route correctly", async () => {
+  assert.equal((await orchestrate(ana, "rentabilidade da minha carteira")).meta.tool, "portfolio_performance");
+  assert.equal((await orchestrate(ana, "aderência de suitability")).meta.tool, "suitability_adherence");
+});
+
+test("revenue_by_segment works for manager, denied for advisor", async () => {
+  assert.equal((await orchestrate(gestora, "receita por segmento de cliente")).meta.tool, "revenue_by_segment");
+  // "receita" is a restricted intent for an advisor → hard deny.
+  assert.equal((await orchestrate(ana, "receita por segmento")).meta.tool, "access_denied");
+});
+
+test("client_detail routes and returns the client's own data end-to-end", async () => {
+  const mine = data.topClients(ana, 1)[0].name;
+  const res = await orchestrate(ana, `resumo do cliente ${mine}`);
+  assert.equal(res.meta.tool, "client_detail");
+  assert.ok(JSON.stringify(res.cards).includes(mine));
+});

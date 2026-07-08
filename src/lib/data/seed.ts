@@ -3,6 +3,8 @@ import type {
   Client,
   PositionRecord,
   CashFlowRecord,
+  PerformanceRecord,
+  BenchmarkPoint,
   AssetClass,
   Segment,
   RiskProfile,
@@ -26,6 +28,11 @@ const between = (min: number, max: number) => min + rand() * (max - min);
 const round = (n: number, step = 1) => Math.round(n / step) * step;
 
 export const TEAM = "Mesa Alpha";
+
+// Six months of history, shared by cash flows and performance.
+export const MONTHS = ["2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"];
+
+const round4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export const advisors: Advisor[] = [
   { id: "A-001", name: "Ana Souza", email: "ana@assessoria.com", team: TEAM },
@@ -137,8 +144,7 @@ for (const advisor of advisors) {
   }
 
   // 6 months of net new money (captação líquida) per advisor.
-  const months = ["2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"];
-  for (const month of months) {
+  for (const month of MONTHS) {
     flowSeq += 1;
     cashFlows.push({
       id: `F-${String(flowSeq).padStart(5, "0")}`,
@@ -148,3 +154,23 @@ for (const advisor of advisors) {
     });
   }
 }
+
+// Monthly portfolio return per advisor (rentabilidade). Generated AFTER the main
+// loop so the existing seeded dataset (clients/positions/cash flows) is unchanged.
+export const performance: PerformanceRecord[] = [];
+for (const advisor of advisors) {
+  for (const month of MONTHS) {
+    performance.push({
+      advisorId: advisor.id,
+      month,
+      // plausible monthly equity-ish return with a positive drift
+      returnPct: round4(between(-0.018, 0.032)),
+    });
+  }
+}
+
+// CDI benchmark (~0.9%/month) for the same window.
+export const CDI_BY_MONTH: BenchmarkPoint[] = MONTHS.map((month) => ({
+  month,
+  returnPct: round4(between(0.0085, 0.0098)),
+}));
