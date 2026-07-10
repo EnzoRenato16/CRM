@@ -88,13 +88,13 @@ export function ComboCard({ spec }: { spec: ComboCardSpec }) {
               }}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            {spec.bars.map((b, i) => (
+            {spec.bars.map((b) => (
               <Bar
                 key={b.name}
                 yAxisId="bars"
                 dataKey={b.name}
                 fill="var(--series-1)"
-                fillOpacity={b.emphasis === "soft" || i === 1 ? 0.35 : 1}
+                fillOpacity={b.emphasis === "soft" ? 0.35 : 1}
                 radius={[4, 4, 0, 0]}
                 maxBarSize={30}
               />

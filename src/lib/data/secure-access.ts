@@ -486,7 +486,9 @@ export function funnelConversion(principal: Principal): FunnelConversion {
     convR1R2: r1 ? r2 / r1 : 0,
     convR2Conta: r2 ? contas / r2 : 0,
     convTotal: r1 ? contas / r1 : 0,
-    naoAbriramConta: Math.max(0, r2 - contas),
+    // Counted directly: accounts can open via FUP recovery without an R2, so
+    // `contas` is NOT a subset of `r2` and subtraction would undercount.
+    naoAbriramConta: leads.filter((l) => l.r2Realizada && !l.contaAberta).length,
     leadsPorConta: contas ? r1 / contas : 0,
     ticketMedioEstimado: tickets.length ? tickets.reduce((a, b) => a + b, 0) / tickets.length : 0,
     tempoMedioAbertura: dias.length ? dias.reduce((a, b) => a + b, 0) / dias.length : 0,
@@ -565,13 +567,16 @@ export function pipeForecast(principal: Principal): PipeForecast {
   const conv = funnelConversion(principal);
   const pipeFrio = frio.reduce((a, l) => a + (l.pipeFrio ?? 0), 0);
   const forecastRaw = fore.reduce((a, l) => a + (l.pipeForecast ?? 0), 0);
+  // A real 0% conversion must NOT be replaced by the 50% prior — only the
+  // absence of R2 history justifies falling back to the neutral assumption.
+  const probConversao = conv.r2Realizadas > 0 ? conv.convR2Conta : 0.5;
   return {
     pipeFrio,
     leadsR1: frio.length,
     ticketMedioPipe: frio.length ? pipeFrio / frio.length : 0,
-    forecast: forecastRaw * (conv.convR2Conta || 0.5),
+    forecast: forecastRaw * probConversao,
     leadsR2: fore.length,
-    probConversao: conv.convR2Conta || 0.5,
+    probConversao,
     pipeQuente: quente.reduce((a, l) => a + (l.pipeQuente ?? 0), 0),
     emAbertura: quente.length,
   };

@@ -42,6 +42,10 @@ test("funnel conversion is monotonic (R1 >= R2 >= contas) with sane rates", () =
     assert.ok(rate >= 0 && rate <= 1);
   }
   assert.ok(f.melhorCaso <= f.tempoMedioAbertura && f.tempoMedioAbertura <= f.piorCaso);
+  // naoAbriramConta counts R2-realizada leads without an account DIRECTLY —
+  // accounts recovered via FUP (no R2) must not distort it via subtraction.
+  assert.ok(f.naoAbriramConta <= f.r2Realizadas);
+  assert.ok(f.naoAbriramConta >= f.r2Realizadas - f.contasAbertas);
 });
 
 test("FUP: convertidos + sem retorno = realizados; recuperados <= convertidos", () => {
@@ -61,8 +65,13 @@ test("lead origins: shares sum to 1 and every origin has leads", () => {
 test("pipe & forecast: forecast = raw pipe x probability, all non-negative", () => {
   const p = data.pipeForecast(gestora);
   assert.ok(p.pipeFrio >= 0 && p.forecast >= 0 && p.pipeQuente >= 0);
-  assert.ok(p.probConversao > 0 && p.probConversao <= 1);
+  assert.ok(p.probConversao >= 0 && p.probConversao <= 1);
   assert.ok(p.leadsR1 > 0);
+  // With R2 history present, the probability must be the REAL conversion rate —
+  // a genuine 0% must never be silently replaced by the 50% prior.
+  const f = data.funnelConversion(gestora);
+  assert.ok(f.r2Realizadas > 0);
+  assert.equal(p.probConversao, f.convR2Conta);
 });
 
 // --- Routing + combo card end-to-end ---------------------------------------------
