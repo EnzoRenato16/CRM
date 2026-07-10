@@ -139,6 +139,30 @@ export interface GoalRecord {
   receitaTarget: number;
 }
 
+/**
+ * NNM driver decomposition per advisor for the period. Reconciles with the cash
+ * flows: captacaoNew + captacaoBase + churnPf + churnPj = net new money.
+ * churn* are negative. Used for the NNM metric tree and churn/new-account views.
+ */
+export interface FlowBreakdown {
+  advisorId: string;
+  captacaoNew: number; // captação de contas novas
+  captacaoBase: number; // captação da base
+  churnPf: number; // negative
+  churnPj: number; // negative
+  activations: number; // contas novas vinculadas no período
+}
+
+/** NPS survey tallies per advisor for the period. */
+export interface NpsRecord {
+  advisorId: string;
+  promoters: number;
+  neutrals: number;
+  detractors: number;
+  /** Surveys sent (for response-rate). */
+  sent: number;
+}
+
 /** A named numeric series point used by most aggregation results. */
 export interface SeriesPoint {
   label: string;

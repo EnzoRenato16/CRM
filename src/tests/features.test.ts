@@ -111,3 +111,41 @@ test("goals_tracker routes and emits a KPI carrying a goal", async () => {
   const kpi = res.cards.find((c) => c.type === "kpi");
   assert.ok(kpi && "goal" in kpi && kpi.goal);
 });
+
+// --- Phase 2: NNM tree, churn, NPS, custody buckets, ROA ---------------------
+
+test("NNM breakdown reconciles exactly with net new money (advisor + manager)", () => {
+  for (const p of [ana, gestora]) {
+    const b = data.nnmBreakdown(p);
+    assert.equal(Math.round(b.nnmTotal), Math.round(data.netNewMoneyTotal(p)));
+    assert.equal(Math.round(b.captacao + b.churn), Math.round(b.nnmTotal));
+  }
+});
+
+test("nnm_breakdown routes and emits a tree card", async () => {
+  const res = await orchestrate(ana, "NNM consolidado, de onde vem a captação");
+  assert.equal(res.meta.tool, "nnm_breakdown");
+  const tree = res.cards.find((c) => c.type === "tree");
+  assert.ok(tree && "root" in tree && Array.isArray(tree.root.children));
+});
+
+test("custody buckets partition the whole book (clients + AUM reconcile)", () => {
+  const rows = data.custodyBuckets(ana);
+  const clients = rows.reduce((a, r) => a + r.clients, 0);
+  const aum = rows.reduce((a, r) => a + r.aum, 0);
+  assert.equal(clients, data.clientCount(ana));
+  assert.equal(Math.round(aum), Math.round(data.totalAum(ana)));
+});
+
+test("NPS overview yields a bounded score and response rate", () => {
+  const n = data.npsOverview(gestora);
+  assert.ok(n.score >= -100 && n.score <= 100);
+  assert.ok(n.responseRate >= 0 && n.responseRate <= 1);
+  assert.equal(n.responses, n.promoters + n.neutrals + n.detractors);
+});
+
+test("ROA is manager-only and routes for the manager", async () => {
+  assert.throws(() => data.roaOverview(ana), AuthorizationError);
+  const res = await orchestrate(gestora, "ROA da mesa");
+  assert.equal(res.meta.tool, "roa_overview");
+});

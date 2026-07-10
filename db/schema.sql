@@ -86,3 +86,46 @@ DROP TRIGGER IF EXISTS trg_position_advisor_consistency ON positions;
 CREATE TRIGGER trg_position_advisor_consistency
   BEFORE INSERT OR UPDATE ON positions
   FOR EACH ROW EXECUTE FUNCTION advisory.check_position_advisor_matches_client();
+
+-- =============================================================================
+--  Analytics / operational tables (goals, performance, flows, NPS)
+--  The in-memory store's secure-access layer maps 1:1 onto these; point the
+--  data layer here to serve the same cards from real data.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS advisor_goals (
+  advisor_id     text PRIMARY KEY REFERENCES advisors(id),
+  nnm_target     numeric(18,2) NOT NULL,
+  -- Commercial (sensitive): revenue target — managers only via column GRANT.
+  receita_target numeric(18,2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS advisor_performance (
+  advisor_id  text NOT NULL REFERENCES advisors(id),
+  month       text NOT NULL,            -- 'YYYY-MM'
+  return_pct  numeric(8,6) NOT NULL,    -- monthly return as a fraction
+  PRIMARY KEY (advisor_id, month)
+);
+CREATE INDEX IF NOT EXISTS idx_perf_advisor ON advisor_performance(advisor_id);
+
+CREATE TABLE IF NOT EXISTS cdi_benchmark (
+  month       text PRIMARY KEY,
+  return_pct  numeric(8,6) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_breakdown (
+  advisor_id    text PRIMARY KEY REFERENCES advisors(id),
+  captacao_new  numeric(18,2) NOT NULL,
+  captacao_base numeric(18,2) NOT NULL,
+  churn_pf      numeric(18,2) NOT NULL,   -- negative
+  churn_pj      numeric(18,2) NOT NULL,   -- negative
+  activations   integer NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS nps (
+  advisor_id  text PRIMARY KEY REFERENCES advisors(id),
+  promoters   integer NOT NULL,
+  neutrals    integer NOT NULL,
+  detractors  integer NOT NULL,
+  sent        integer NOT NULL
+);

@@ -5,6 +5,7 @@ import { BarCard } from "./BarCard";
 import { LineCard } from "./LineCard";
 import { TableCard } from "./TableCard";
 import { TextCard } from "./TextCard";
+import { TreeCard } from "./TreeCard";
 
 /**
  * The generative-UI dispatcher: turns a validated CardSpec into a whitelisted
@@ -25,6 +26,8 @@ export function CardRenderer({ card }: { card: CardSpec }) {
       return <TableCard spec={card} />;
     case "text":
       return <TextCard spec={card} />;
+    case "tree":
+      return <TreeCard spec={card} />;
     default:
       // Exhaustiveness: adding a card variant without a renderer is a compile
       // error here (card is narrowed to `never`) instead of a silent blank.

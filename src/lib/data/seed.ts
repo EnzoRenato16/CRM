@@ -6,6 +6,8 @@ import type {
   PerformanceRecord,
   BenchmarkPoint,
   GoalRecord,
+  FlowBreakdown,
+  NpsRecord,
   AssetClass,
   Segment,
   RiskProfile,
@@ -183,3 +185,35 @@ export const goals: GoalRecord[] = advisors.map((a) => ({
   nnmTarget: round(between(6_000_000, 18_000_000), 100_000),
   receitaTarget: round(between(250_000, 700_000), 10_000),
 }));
+
+// NNM driver decomposition per advisor, derived to RECONCILE with each advisor's
+// net new money (captação + churn = NNM). Lets the NNM tree add up exactly.
+export const flows: FlowBreakdown[] = advisors.map((a) => {
+  const nnm = cashFlows
+    .filter((f) => f.advisorId === a.id)
+    .reduce((s, f) => s + f.netNewMoney, 0);
+  const churnTotal = -round(between(3_000_000, 12_000_000), 1000);
+  const captacaoTotal = nnm - churnTotal; // so captação + churn === nnm
+  const captacaoNew = round(captacaoTotal * between(0.06, 0.18), 1000);
+  const captacaoBase = captacaoTotal - captacaoNew;
+  const churnPf = round(churnTotal * between(0.7, 0.9), 1000);
+  const churnPj = churnTotal - churnPf;
+  return {
+    advisorId: a.id,
+    captacaoNew,
+    captacaoBase,
+    churnPf,
+    churnPj,
+    activations: Math.round(between(3, 14)),
+  };
+});
+
+// NPS survey tallies per advisor for the period.
+export const nps: NpsRecord[] = advisors.map((a) => {
+  const sent = Math.round(between(150, 400));
+  const responses = Math.round(sent * between(0.15, 0.35));
+  const promoters = Math.round(responses * between(0.6, 0.85));
+  const detractors = Math.round(responses * between(0.03, 0.12));
+  const neutrals = Math.max(0, responses - promoters - detractors);
+  return { advisorId: a.id, promoters, neutrals, detractors, sent };
+});

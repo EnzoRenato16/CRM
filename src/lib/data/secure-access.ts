@@ -286,6 +286,115 @@ export function goalsFor(principal: Principal): { nnm: GoalProgress; receita?: G
   return { nnm };
 }
 
+// --- NNM driver decomposition (metric tree) ----------------------------------
+
+export interface NnmBreakdown {
+  nnmTotal: number;
+  captacao: number;
+  captacaoNew: number;
+  captacaoBase: number;
+  churn: number;
+  churnPf: number;
+  churnPj: number;
+  activations: number;
+  ticketMedio: number;
+}
+
+function scopedFlows(principal: Principal) {
+  return principal.role === "manager"
+    ? db.flows
+    : db.flows.filter((f) => f.advisorId === principal.advisorId);
+}
+
+export function nnmBreakdown(principal: Principal): NnmBreakdown {
+  const f = scopedFlows(principal);
+  const captacaoNew = sumBy(f, (x) => x.captacaoNew);
+  const captacaoBase = sumBy(f, (x) => x.captacaoBase);
+  const churnPf = sumBy(f, (x) => x.churnPf);
+  const churnPj = sumBy(f, (x) => x.churnPj);
+  const activations = sumBy(f, (x) => x.activations);
+  const captacao = captacaoNew + captacaoBase;
+  const churn = churnPf + churnPj;
+  return {
+    nnmTotal: captacao + churn,
+    captacao,
+    captacaoNew,
+    captacaoBase,
+    churn,
+    churnPf,
+    churnPj,
+    activations,
+    ticketMedio: activations ? captacaoNew / activations : 0,
+  };
+}
+
+// --- NPS (satisfação) --------------------------------------------------------
+
+export interface NpsOverview {
+  score: number;
+  responseRate: number;
+  promoters: number;
+  neutrals: number;
+  detractors: number;
+  responses: number;
+  sent: number;
+}
+
+function scopedNps(principal: Principal) {
+  return principal.role === "manager"
+    ? db.nps
+    : db.nps.filter((n) => n.advisorId === principal.advisorId);
+}
+
+export function npsOverview(principal: Principal): NpsOverview {
+  const n = scopedNps(principal);
+  const promoters = sumBy(n, (x) => x.promoters);
+  const neutrals = sumBy(n, (x) => x.neutrals);
+  const detractors = sumBy(n, (x) => x.detractors);
+  const sent = sumBy(n, (x) => x.sent);
+  const responses = promoters + neutrals + detractors;
+  return {
+    score: responses ? Math.round(((promoters - detractors) / responses) * 100) : 0,
+    responseRate: sent ? responses / sent : 0,
+    promoters,
+    neutrals,
+    detractors,
+    responses,
+    sent,
+  };
+}
+
+// --- Custody buckets (faixas de custódia) ------------------------------------
+
+export interface CustodyBucket {
+  bucket: string;
+  clients: number;
+  aum: number;
+}
+
+const CUSTODY_BUCKETS: { label: string; max: number }[] = [
+  { label: "< 300k", max: 300_000 },
+  { label: "300k – 1 Mi", max: 1_000_000 },
+  { label: "1 – 5 Mi", max: 5_000_000 },
+  { label: "5 – 10 Mi", max: 10_000_000 },
+  { label: "≥ 10 Mi", max: Infinity },
+];
+
+export function custodyBuckets(principal: Principal): CustodyBucket[] {
+  const byClient = new Map<string, number>();
+  for (const p of scopedPositions(principal)) {
+    byClient.set(p.clientId, (byClient.get(p.clientId) ?? 0) + p.marketValue);
+  }
+  const rows = CUSTODY_BUCKETS.map((b) => ({ bucket: b.label, clients: 0, aum: 0 }));
+  for (const aum of byClient.values()) {
+    let i = CUSTODY_BUCKETS.findIndex((b) => aum < b.max);
+    if (i === -1) i = CUSTODY_BUCKETS.length - 1;
+    rows[i].clients += 1;
+    rows[i].aum += aum;
+  }
+  return rows;
+}
+
 // --- Suitability adherence (compliance) --------------------------------------
 
 export interface SuitabilityResult {
@@ -556,4 +665,27 @@ export function revenueBySegment(principal: Principal): SegmentRevenueRow[] {
   return [...bySegment.entries()]
     .map(([segment, v]) => ({ segment, ...v, margin: v.revenue - v.commission }))
     .sort((a, b) => b.revenue - a.revenue);
+}
+
+export interface RoaOverview {
+  roa: number;
+  grossRevenue: number;
+  aum: number;
+  byAdvisor: SeriesPoint[];
+}
+
+/** ROA (receita bruta / custódia) — commercial, so manager-only. */
+export function roaOverview(principal: Principal): RoaOverview {
+  assertManager(principal, "ROA (receita sobre custódia)");
+  const grossRevenue = sumBy(db.positions, (p) => p.grossRevenueYtd);
+  const aum = sumBy(db.positions, (p) => p.marketValue);
+  const byAdvisor = db.advisors
+    .map((a) => {
+      const pos = db.positions.filter((p) => p.advisorId === a.id);
+      const rev = sumBy(pos, (p) => p.grossRevenueYtd);
+      const au = sumBy(pos, (p) => p.marketValue);
+      return { label: a.name, value: au ? rev / au : 0 };
+    })
+    .sort((a, b) => b.value - a.value);
+  return { roa: aum ? grossRevenue / aum : 0, grossRevenue, aum, byAdvisor };
 }

@@ -614,12 +614,192 @@ const goalsTracker: ToolDef = {
   },
 };
 
+// --- NNM metric tree / decomposition (both roles) ----------------------------
+
+const nnmBreakdownTool: ToolDef = {
+  name: "nnm_breakdown",
+  description:
+    "Decomposição da captação líquida: NNM = Captação − Churn; Captação = Contas Novas + Base; Contas Novas = Ativações × Ticket Médio. Use para 'de onde vem a captação', 'árvore de NNM', 'NNM consolidado', 'decomposição da captação'.",
+  keywords: ["nnm consolidado", "decomposição", "decomposicao", "de onde vem a captação", "de onde vem a captacao", "árvore de nnm", "arvore de nnm", "visão consolidada", "visao consolidada", "nnm total"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const b = data.nnmBreakdown(principal);
+    const brl = (v: number) => formatBRL(v, { compact: true });
+    return {
+      narrative: `NNM de **${brl(b.nnmTotal)}** = captação ${brl(b.captacao)} − churn ${brl(Math.abs(b.churn))}.`,
+      cards: [
+        {
+          type: "tree",
+          title: "NNM — visão consolidada",
+          caption: "Captação − Churn, decompostos até ativações × ticket médio.",
+          root: {
+            label: "NNM Total",
+            value: brl(b.nnmTotal),
+            tone: "total",
+            children: [
+              {
+                label: "Captação",
+                value: brl(b.captacao),
+                tone: "positive",
+                hint: "NNM mensal > 0",
+                children: [
+                  {
+                    label: "Contas Novas",
+                    value: brl(b.captacaoNew),
+                    tone: "neutral",
+                    children: [
+                      { label: "Ativações", value: formatNumber(b.activations), tone: "neutral", hint: "contas no período" },
+                      { label: "Ticket Médio", value: brl(b.ticketMedio), tone: "neutral", hint: "NET / conta nova" },
+                    ],
+                  },
+                  { label: "Captação da Base", value: brl(b.captacaoBase), tone: "neutral" },
+                ],
+              },
+              {
+                label: "Churn",
+                value: brl(b.churn),
+                tone: "negative",
+                hint: "NNM mensal < 0",
+                children: [
+                  { label: "Churn PF", value: brl(b.churnPf), tone: "neutral" },
+                  { label: "Churn PJ", value: brl(b.churnPj), tone: "neutral" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    };
+  },
+};
+
+// --- Churn + new accounts (both roles) ---------------------------------------
+
+const churnOverviewTool: ToolDef = {
+  name: "churn_overview",
+  description:
+    "Churn e contas novas: churn total (PF/PJ) e a captação de contas novas com ativações e ticket médio. Use para 'churn', 'evasão', 'contas novas', 'ativações', 'ticket médio'.",
+  keywords: ["churn", "evasão", "evasao", "contas novas", "conta nova", "ativações", "ativacoes", "ticket médio", "ticket medio"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const b = data.nnmBreakdown(principal);
+    const brl = (v: number) => formatBRL(v, { compact: true });
+    return {
+      narrative: `Churn de **${brl(b.churn)}** e ${formatNumber(b.activations)} contas novas no período.`,
+      cards: [
+        { type: "kpi", title: "Churn NNM total", value: brl(b.churn), accent: "rose", delta: { label: "saída de recursos", direction: "down" } },
+        { type: "kpi", title: "Contas novas (captação)", value: brl(b.captacaoNew), accent: "emerald", caption: `${formatNumber(b.activations)} ativações · ticket ${brl(b.ticketMedio)}` },
+        {
+          type: "bar",
+          title: "Churn por tipo de cliente",
+          orientation: "horizontal",
+          valueFormat: "brl_compact",
+          data: [
+            { label: "Churn PF", value: b.churnPf },
+            { label: "Churn PJ", value: b.churnPj },
+          ],
+        },
+      ],
+    };
+  },
+};
+
+// --- NPS / satisfação (both roles) -------------------------------------------
+
+const npsOverviewTool: ToolDef = {
+  name: "nps_overview",
+  description:
+    "NPS (satisfação): score, taxa de resposta e distribuição entre promotores, neutros e detratores. Use para 'nps', 'satisfação', 'pesquisa de satisfação', 'promotores'.",
+  keywords: ["nps", "satisfação", "satisfacao", "pesquisa de satisfação", "pesquisa de satisfacao", "promotores", "detratores", "net promoter"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const n = data.npsOverview(principal);
+    return {
+      narrative: `NPS de **${n.score}** com ${formatPercent(n.responseRate)} de taxa de resposta.`,
+      cards: [
+        { type: "kpi", title: "NPS", value: String(n.score), accent: n.score >= 70 ? "emerald" : n.score >= 50 ? "amber" : "rose" },
+        { type: "kpi", title: "Taxa de resposta", value: formatPercent(n.responseRate), accent: "brand", caption: `${formatNumber(n.responses)} de ${formatNumber(n.sent)} enviados` },
+        {
+          type: "pie",
+          title: "Respostas por tipo",
+          valueFormat: "number",
+          data: [
+            { label: "Promotores", value: n.promoters },
+            { label: "Neutros", value: n.neutrals },
+            { label: "Detratores", value: n.detractors },
+          ],
+        },
+      ],
+    };
+  },
+};
+
+// --- Custody buckets / faixas de custódia (both roles) -----------------------
+
+const custodyBucketsTool: ToolDef = {
+  name: "custody_buckets",
+  description:
+    "Faixas de custódia: número de clientes e patrimônio por faixa de tamanho (<300k, 300k–1Mi, 1–5Mi, 5–10Mi, ≥10Mi). Use para 'faixas de custódia', 'clientes por faixa', 'segmentação por tamanho'.",
+  keywords: ["faixa de custódia", "faixas de custódia", "faixas de custodia", "faixa de custodia", "clientes por faixa", "por tamanho", "segmentação por tamanho", "faixa de patrimônio"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const rows = data.custodyBuckets(principal);
+    return {
+      narrative: "Distribuição de clientes e patrimônio por faixa de custódia.",
+      cards: [
+        {
+          type: "bar",
+          title: "Patrimônio por faixa",
+          orientation: "horizontal",
+          valueFormat: "brl_compact",
+          data: rows.map((r) => ({ label: r.bucket, value: r.aum })),
+        },
+        {
+          type: "table",
+          title: "Clientes e patrimônio por faixa",
+          columns: [
+            { key: "bucket", label: "Faixa", align: "left" },
+            { key: "clients", label: "Clientes", align: "right", format: "number" },
+            { key: "aum", label: "Patrimônio", align: "right", format: "brl_compact" },
+          ],
+          rows: rows.map((r) => ({ bucket: r.bucket, clients: r.clients, aum: r.aum })),
+        },
+      ],
+    };
+  },
+};
+
+// --- ROA (manager-only) ------------------------------------------------------
+
+const roaOverviewTool: ToolDef = {
+  name: "roa_overview",
+  description:
+    "RESTRITO A GESTORES. ROA (receita bruta sobre custódia) da mesa e por assessor. Use para 'roa', 'receita sobre custódia', 'return on assets'.",
+  requiredRole: "manager",
+  keywords: ["roa", "receita sobre custódia", "receita sobre custodia", "return on assets"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const r = data.roaOverview(principal);
+    return {
+      narrative: `ROA da mesa: **${formatPercent(r.roa)}** (receita ${formatBRL(r.grossRevenue, { compact: true })} sobre ${formatBRL(r.aum, { compact: true })}).`,
+      cards: [
+        { type: "kpi", title: "ROA da mesa", value: formatPercent(r.roa), accent: "emerald", caption: "Receita bruta ÷ custódia" },
+        { type: "bar", title: "ROA por assessor", orientation: "horizontal", valueFormat: "percent", data: r.byAdvisor },
+      ],
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   portfolioOverview,
   allocationByClass,
   assetClassDetail,
   topClients,
   netNewMoney,
+  nnmBreakdownTool,
+  churnOverviewTool,
+  custodyBucketsTool,
+  npsOverviewTool,
   riskDistribution,
   suitabilityAdherence,
   portfolioPerformance,
@@ -629,6 +809,7 @@ export const TOOLS: ToolDef[] = [
   commissionByClass,
   teamRanking,
   revenueBySegment,
+  roaOverviewTool,
 ];
 
 export function getTool(name: string): ToolDef | undefined {

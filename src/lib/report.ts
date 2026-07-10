@@ -1,4 +1,4 @@
-import type { AssistantResponse, CardSpec } from "@/lib/cards/schema";
+import type { AssistantResponse, CardSpec, TreeNode } from "@/lib/cards/schema";
 import { formatValue } from "@/components/cards/format";
 
 /**
@@ -64,6 +64,15 @@ function cardHtml(card: CardSpec): string {
         )
         .join("");
       return `<section class="block"><h3>${esc(card.title)}</h3><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></section>`;
+    }
+    case "tree": {
+      const rows = (node: TreeNode, depth: number): string => {
+        const hint = node.hint ? ` <span class="muted">(${esc(node.hint)})</span>` : "";
+        let html = `<tr><td style="padding-left:${depth * 18}px">${esc(node.label)}${hint}</td><td class="num">${esc(node.value)}</td></tr>`;
+        for (const child of node.children ?? []) html += rows(child, depth + 1);
+        return html;
+      };
+      return `<section class="block"><h3>${esc(card.title)}</h3><table><tbody>${rows(card.root, 0)}</tbody></table></section>`;
     }
     case "text":
       return `<section class="block note"><h3>${esc(card.title ?? "")}</h3><p>${esc(stripBold(card.body))}</p></section>`;

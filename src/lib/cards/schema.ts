@@ -85,6 +85,35 @@ export const textCard = z.object({
   tone: z.enum(["neutral", "warning"]).default("neutral"),
 });
 
+/**
+ * A metric-tree / driver decomposition (e.g. NNM = Captação − Churn …). Recursive
+ * node structure; each node carries a pre-formatted value and a tone.
+ */
+export type TreeNode = {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: "total" | "positive" | "negative" | "neutral";
+  children?: TreeNode[];
+};
+
+const treeNode: z.ZodType<TreeNode> = z.lazy(() =>
+  z.object({
+    label: z.string(),
+    value: z.string(),
+    hint: z.string().optional(),
+    tone: z.enum(["total", "positive", "negative", "neutral"]).optional(),
+    children: z.array(treeNode).optional(),
+  })
+);
+
+export const treeCard = z.object({
+  type: z.literal("tree"),
+  title: z.string(),
+  root: treeNode,
+  caption: z.string().optional(),
+});
+
 export const cardSchema = z.discriminatedUnion("type", [
   kpiCard,
   pieCard,
@@ -92,6 +121,7 @@ export const cardSchema = z.discriminatedUnion("type", [
   lineCard,
   tableCard,
   textCard,
+  treeCard,
 ]);
 
 export const assistantResponseSchema = z.object({
@@ -112,5 +142,6 @@ export type BarCard = z.infer<typeof barCard>;
 export type LineCard = z.infer<typeof lineCard>;
 export type TableCard = z.infer<typeof tableCard>;
 export type TextCard = z.infer<typeof textCard>;
+export type TreeCard = z.infer<typeof treeCard>;
 export type CardSpec = z.infer<typeof cardSchema>;
 export type AssistantResponse = z.infer<typeof assistantResponseSchema>;

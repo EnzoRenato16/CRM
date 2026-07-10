@@ -133,3 +133,33 @@ CREATE POLICY audit_insert_advisor ON audit_log
 CREATE POLICY audit_insert_manager ON audit_log
   FOR INSERT TO app_manager
   WITH CHECK (true);
+
+-- 5) ANALYTICS TABLES: same row + column scope model --------------------------
+
+ALTER TABLE advisor_goals       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advisor_performance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE flow_breakdown      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE nps                 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advisor_goals       FORCE ROW LEVEL SECURITY;
+ALTER TABLE advisor_performance FORCE ROW LEVEL SECURITY;
+ALTER TABLE flow_breakdown      FORCE ROW LEVEL SECURITY;
+ALTER TABLE nps                 FORCE ROW LEVEL SECURITY;
+
+-- Advisors: only their own row; managers: all.
+CREATE POLICY adv_goals_scope ON advisor_goals       FOR SELECT TO app_advisor USING (advisor_id = current_setting('app.current_advisor_id', true));
+CREATE POLICY mgr_goals_all   ON advisor_goals       FOR SELECT TO app_manager USING (true);
+CREATE POLICY adv_perf_scope  ON advisor_performance FOR SELECT TO app_advisor USING (advisor_id = current_setting('app.current_advisor_id', true));
+CREATE POLICY mgr_perf_all    ON advisor_performance FOR SELECT TO app_manager USING (true);
+CREATE POLICY adv_flow_scope  ON flow_breakdown      FOR SELECT TO app_advisor USING (advisor_id = current_setting('app.current_advisor_id', true));
+CREATE POLICY mgr_flow_all    ON flow_breakdown      FOR SELECT TO app_manager USING (true);
+CREATE POLICY adv_nps_scope   ON nps                 FOR SELECT TO app_advisor USING (advisor_id = current_setting('app.current_advisor_id', true));
+CREATE POLICY mgr_nps_all     ON nps                 FOR SELECT TO app_manager USING (true);
+
+-- Column privileges: advisors never see the commercial revenue target.
+REVOKE ALL ON advisor_goals FROM app_advisor, app_manager;
+GRANT SELECT (advisor_id, nnm_target) ON advisor_goals TO app_advisor;
+GRANT SELECT (advisor_id, nnm_target, receita_target) ON advisor_goals TO app_manager;
+
+GRANT SELECT ON advisor_performance, flow_breakdown, nps TO app_advisor, app_manager;
+-- CDI is a public benchmark (no advisor scope, not sensitive).
+GRANT SELECT ON cdi_benchmark TO app_advisor, app_manager;

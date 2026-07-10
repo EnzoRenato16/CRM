@@ -33,10 +33,15 @@ export const BOARD_CATALOG: CatalogEntry[] = [
   { id: "suitability", label: "Aderência de suitability", description: "Enquadramento de risco (compliance)", question: "Aderência de suitability", roles: ["advisor", "manager"] },
   { id: "top-clients", label: "Maiores clientes", description: "Top clientes por patrimônio", question: "Meus 10 maiores clientes", roles: ["advisor", "manager"] },
   { id: "nnm", label: "Captação líquida", description: "NNM mês a mês", question: "Minha captação líquida no período", roles: ["advisor", "manager"] },
+  { id: "nnm-tree", label: "NNM consolidado", description: "Árvore Captação − Churn", question: "NNM consolidado, de onde vem a captação", roles: ["advisor", "manager"] },
+  { id: "churn", label: "Churn e contas novas", description: "Evasão PF/PJ e ativações", question: "Churn e contas novas", roles: ["advisor", "manager"] },
+  { id: "custody", label: "Faixas de custódia", description: "Clientes por tamanho", question: "Faixas de custódia", roles: ["advisor", "manager"] },
+  { id: "nps", label: "NPS", description: "Satisfação e taxa de resposta", question: "NPS e satisfação", roles: ["advisor", "manager"] },
   { id: "risk", label: "Perfil de risco", description: "Distribuição por suitability", question: "Distribuição por perfil de risco", roles: ["advisor", "manager"] },
   // Manager-only
   { id: "team-revenue", label: "Faturamento da equipe", description: "Receita, comissões e margem", question: "Faturamento da equipe", roles: ["manager"] },
   { id: "revenue-segment", label: "Receita por segmento", description: "Varejo / Private / Corporate", question: "Receita por segmento de cliente", roles: ["manager"] },
+  { id: "roa", label: "ROA da mesa", description: "Receita sobre custódia", question: "ROA da mesa", roles: ["manager"] },
   { id: "ranking", label: "Ranking dos assessores", description: "AUM e captação por assessor", question: "Ranking dos assessores", roles: ["manager"] },
   { id: "commission-class", label: "Receita por classe", description: "De onde vem a receita", question: "Receita por classe de ativo", roles: ["manager"] },
 ];
