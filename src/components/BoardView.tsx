@@ -18,10 +18,46 @@ export function BoardView({ role, userEmail }: { role: BoardRole; userEmail: str
   const [adding, setAdding] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const catalog = catalogFor(role);
 
+  // Load the saved board, then RE-RUN each card's question so the dashboard
+  // reflects the data as it is NOW (the cached cards render meanwhile).
   useEffect(() => {
-    setItems(loadBoard(userEmail));
+    const saved = loadBoard(userEmail);
+    setItems(saved);
+    let cancelled = false;
+    async function refreshAll() {
+      const withQuestions = saved.filter((i) => i.question);
+      if (withQuestions.length === 0) return;
+      setRefreshing(true);
+      const updates = await Promise.all(
+        saved.map(async (item) => {
+          if (!item.question) return item;
+          try {
+            const res = await fetch("/api/query", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message: item.question }),
+            });
+            if (!res.ok) return item;
+            const r = (await res.json()) as AssistantResponse;
+            return { ...item, tool: r.meta.tool, cards: r.cards };
+          } catch {
+            return item; // keep the cached snapshot on failure
+          }
+        })
+      );
+      if (!cancelled) {
+        setItems(updates);
+        saveBoard(userEmail, updates);
+        setRefreshing(false);
+      }
+    }
+    void refreshAll();
+    return () => {
+      cancelled = true;
+    };
   }, [userEmail]);
 
   function persist(next: BoardItem[]) {
@@ -45,7 +81,10 @@ export function BoardView({ role, userEmail }: { role: BoardRole; userEmail: str
         return;
       }
       const r = data as AssistantResponse;
-      persist([...items, { id: newId(), label: entry.label, tool: r.meta.tool, cards: r.cards }]);
+      persist([
+        ...items,
+        { id: newId(), label: entry.label, tool: r.meta.tool, question: entry.question, cards: r.cards },
+      ]);
       setPickerOpen(false);
     } catch {
       setError("Erro de rede ao adicionar o card.");
@@ -71,9 +110,20 @@ export function BoardView({ role, userEmail }: { role: BoardRole; userEmail: str
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">Meu Painel</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold tracking-tight">Meu Painel</h1>
+            {refreshing && (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-ink-400" role="status">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className="animate-spin" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+                  <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+                atualizando…
+              </span>
+            )}
+          </div>
           <p className="text-sm text-ink-500">
-            Monte o seu dashboard com cards prontos — persiste no seu navegador.
+            Cards se atualizam a cada visita — os dados vêm da fonte, não de um snapshot.
           </p>
         </div>
         <button

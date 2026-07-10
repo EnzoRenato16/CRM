@@ -65,6 +65,25 @@ function cardHtml(card: CardSpec): string {
         .join("");
       return `<section class="block"><h3>${esc(card.title)}</h3><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></section>`;
     }
+    case "combo": {
+      const lineFmt = card.line?.valueFormat ?? card.valueFormat;
+      const head =
+        `<th></th>` +
+        card.bars.map((b) => `<th class="num">${esc(b.name)}</th>`).join("") +
+        (card.line ? `<th class="num">${esc(card.line.name)}</th>` : "");
+      const body = card.categories
+        .map((cat, i) => {
+          const cells = card.bars
+            .map((b) => `<td class="num">${esc(formatValue(b.values[i] ?? 0, card.valueFormat))}</td>`)
+            .join("");
+          const lineCell = card.line
+            ? `<td class="num">${esc(formatValue(card.line.values[i] ?? 0, lineFmt))}</td>`
+            : "";
+          return `<tr><td>${esc(cat)}</td>${cells}${lineCell}</tr>`;
+        })
+        .join("");
+      return `<section class="block"><h3>${esc(card.title)}</h3><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></section>`;
+    }
     case "tree": {
       const rows = (node: TreeNode, depth: number): string => {
         const hint = node.hint ? ` <span class="muted">(${esc(node.hint)})</span>` : "";

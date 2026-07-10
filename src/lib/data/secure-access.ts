@@ -395,6 +395,215 @@ export function custodyBuckets(principal: Principal): CustodyBucket[] {
   return rows;
 }
 
+// --- CRM prospecting funnel (vw_louro_negocio) --------------------------------
+// Advisor-scoped like everything else: an advisor reads only their own leads.
+// In production these aggregations run as SQL over the Pipefy sync view.
+
+function scopedFunnel(principal: Principal) {
+  return principal.role === "manager"
+    ? db.funnel
+    : db.funnel.filter((l) => l.advisorId === principal.advisorId);
+}
+
+export interface MeetingsOverview {
+  r1Agendadas: number;
+  r2Agendadas: number;
+  r1Realizadas: number;
+  r2Realizadas: number;
+  noShowR1: number;
+  noShowR2: number;
+  taxaComparecimentoR1: number;
+  taxaComparecimentoR2: number;
+  taxaNoShow: number;
+  monthly: { month: string; agendadas: number; realizadas: number; noShows: number }[];
+}
+
+export function meetingsOverview(principal: Principal): MeetingsOverview {
+  const leads = scopedFunnel(principal);
+  const r1Agendadas = leads.filter((l) => l.r1Agendada).length;
+  const r1Realizadas = leads.filter((l) => l.r1Realizada).length;
+  const r2Agendadas = leads.filter((l) => l.r2Agendada).length;
+  const r2Realizadas = leads.filter((l) => l.r2Realizada).length;
+  const noShowR1 = r1Agendadas - r1Realizadas;
+  const noShowR2 = r2Agendadas - r2Realizadas;
+  const agendadas = r1Agendadas + r2Agendadas;
+
+  const byMonth = new Map<string, { agendadas: number; realizadas: number; noShows: number }>();
+  for (const l of leads) {
+    const m = byMonth.get(l.criadoMonth) ?? { agendadas: 0, realizadas: 0, noShows: 0 };
+    m.agendadas += (l.r1Agendada ? 1 : 0) + (l.r2Agendada ? 1 : 0);
+    m.realizadas += (l.r1Realizada ? 1 : 0) + (l.r2Realizada ? 1 : 0);
+    m.noShows += (l.r1Agendada && !l.r1Realizada ? 1 : 0) + (l.r2Agendada && !l.r2Realizada ? 1 : 0);
+    byMonth.set(l.criadoMonth, m);
+  }
+
+  return {
+    r1Agendadas,
+    r2Agendadas,
+    r1Realizadas,
+    r2Realizadas,
+    noShowR1,
+    noShowR2,
+    taxaComparecimentoR1: r1Agendadas ? r1Realizadas / r1Agendadas : 0,
+    taxaComparecimentoR2: r2Agendadas ? r2Realizadas / r2Agendadas : 0,
+    taxaNoShow: agendadas ? (noShowR1 + noShowR2) / agendadas : 0,
+    monthly: [...byMonth.entries()]
+      .map(([month, v]) => ({ month, ...v }))
+      .sort((a, b) => a.month.localeCompare(b.month)),
+  };
+}
+
+export interface FunnelConversion {
+  r1Realizadas: number;
+  r2Realizadas: number;
+  contasAbertas: number;
+  convR1R2: number;
+  convR2Conta: number;
+  convTotal: number;
+  naoAbriramConta: number;
+  leadsPorConta: number;
+  ticketMedioEstimado: number;
+  tempoMedioAbertura: number;
+  melhorCaso: number;
+  piorCaso: number;
+}
+
+export function funnelConversion(principal: Principal): FunnelConversion {
+  const leads = scopedFunnel(principal);
+  const r1 = leads.filter((l) => l.r1Realizada).length;
+  const r2 = leads.filter((l) => l.r2Realizada).length;
+  const contas = leads.filter((l) => l.contaAberta).length;
+  const tickets = leads
+    .map((l) => l.pipeFrio ?? l.pipeForecast ?? l.pipeQuente)
+    .filter((v): v is number => v != null && v > 1);
+  const dias = leads
+    .map((l) => l.diasAteAbertura)
+    .filter((v): v is number => v != null);
+  return {
+    r1Realizadas: r1,
+    r2Realizadas: r2,
+    contasAbertas: contas,
+    convR1R2: r1 ? r2 / r1 : 0,
+    convR2Conta: r2 ? contas / r2 : 0,
+    convTotal: r1 ? contas / r1 : 0,
+    naoAbriramConta: Math.max(0, r2 - contas),
+    leadsPorConta: contas ? r1 / contas : 0,
+    ticketMedioEstimado: tickets.length ? tickets.reduce((a, b) => a + b, 0) / tickets.length : 0,
+    tempoMedioAbertura: dias.length ? dias.reduce((a, b) => a + b, 0) / dias.length : 0,
+    melhorCaso: dias.length ? Math.min(...dias) : 0,
+    piorCaso: dias.length ? Math.max(...dias) : 0,
+  };
+}
+
+export interface FupOverview {
+  realizados: number;
+  convertidos: number;
+  semRetorno: number;
+  taxaConversao: number;
+  recuperadosR1: number;
+  recuperadosR2: number;
+  reguaMedia: number;
+  melhorRegua: number;
+  monthly: { month: string; realizados: number; taxa: number }[];
+}
+
+export function fupOverview(principal: Principal): FupOverview {
+  const leads = scopedFunnel(principal);
+  const done = leads.filter((l) => l.fupRealizado);
+  const converted = done.filter((l) => l.fupConvertido);
+  const tentativas = leads.filter((l) => l.passouFup).map((l) => l.tentativasContato);
+
+  // Best per-advisor average contact cadence within scope (régua de contato).
+  const byAdvisor = new Map<string, number[]>();
+  for (const l of leads) {
+    if (!l.passouFup) continue;
+    byAdvisor.set(l.advisorId, [...(byAdvisor.get(l.advisorId) ?? []), l.tentativasContato]);
+  }
+  const advisorAvgs = [...byAdvisor.values()].map(
+    (arr) => arr.reduce((a, b) => a + b, 0) / arr.length
+  );
+
+  const byMonth = new Map<string, { realizados: number; convertidos: number }>();
+  for (const l of done) {
+    const m = byMonth.get(l.criadoMonth) ?? { realizados: 0, convertidos: 0 };
+    m.realizados += 1;
+    if (l.fupConvertido) m.convertidos += 1;
+    byMonth.set(l.criadoMonth, m);
+  }
+
+  return {
+    realizados: done.length,
+    convertidos: converted.length,
+    semRetorno: done.length - converted.length,
+    taxaConversao: done.length ? converted.length / done.length : 0,
+    recuperadosR1: converted.filter((l) => l.fupRecuperadoDe === "r1").length,
+    recuperadosR2: converted.filter((l) => l.fupRecuperadoDe === "r2").length,
+    reguaMedia: tentativas.length ? tentativas.reduce((a, b) => a + b, 0) / tentativas.length : 0,
+    melhorRegua: advisorAvgs.length ? Math.max(...advisorAvgs) : 0,
+    monthly: [...byMonth.entries()]
+      .map(([month, v]) => ({ month, realizados: v.realizados, taxa: v.realizados ? v.convertidos / v.realizados : 0 }))
+      .sort((a, b) => a.month.localeCompare(b.month)),
+  };
+}
+
+export interface PipeForecast {
+  pipeFrio: number;
+  leadsR1: number;
+  ticketMedioPipe: number;
+  forecast: number;
+  leadsR2: number;
+  probConversao: number;
+  pipeQuente: number;
+  emAbertura: number;
+}
+
+export function pipeForecast(principal: Principal): PipeForecast {
+  const leads = scopedFunnel(principal);
+  const frio = leads.filter((l) => l.pipeFrio != null && l.pipeFrio > 1);
+  const fore = leads.filter((l) => l.pipeForecast != null && l.pipeForecast > 1);
+  const quente = leads.filter((l) => l.pipeQuente != null && l.pipeQuente > 1);
+  const conv = funnelConversion(principal);
+  const pipeFrio = frio.reduce((a, l) => a + (l.pipeFrio ?? 0), 0);
+  const forecastRaw = fore.reduce((a, l) => a + (l.pipeForecast ?? 0), 0);
+  return {
+    pipeFrio,
+    leadsR1: frio.length,
+    ticketMedioPipe: frio.length ? pipeFrio / frio.length : 0,
+    forecast: forecastRaw * (conv.convR2Conta || 0.5),
+    leadsR2: fore.length,
+    probConversao: conv.convR2Conta || 0.5,
+    pipeQuente: quente.reduce((a, l) => a + (l.pipeQuente ?? 0), 0),
+    emAbertura: quente.length,
+  };
+}
+
+export interface OriginRow {
+  origem: string;
+  leads: number;
+  share: number;
+  conversao: number;
+}
+
+export function leadOrigins(principal: Principal): OriginRow[] {
+  const leads = scopedFunnel(principal);
+  const total = leads.length || 1;
+  const byOrigin = new Map<string, { leads: number; contas: number }>();
+  for (const l of leads) {
+    const cur = byOrigin.get(l.origem) ?? { leads: 0, contas: 0 };
+    cur.leads += 1;
+    if (l.contaAberta) cur.contas += 1;
+    byOrigin.set(l.origem, cur);
+  }
+  return [...byOrigin.entries()]
+    .map(([origem, v]) => ({
+      origem,
+      leads: v.leads,
+      share: v.leads / total,
+      conversao: v.leads ? v.contas / v.leads : 0,
+    }))
+    .sort((a, b) => b.leads - a.leads);
+}
+
 // --- Suitability adherence (compliance) --------------------------------------
 
 export interface SuitabilityResult {

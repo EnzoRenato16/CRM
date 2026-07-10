@@ -790,6 +790,179 @@ const roaOverviewTool: ToolDef = {
   },
 };
 
+// =============================================================================
+//  CRM PROSPECTING FUNNEL (vw_louro_negocio) — commercial effort tools
+// =============================================================================
+
+const meetingsOverviewTool: ToolDef = {
+  name: "meetings_overview",
+  description:
+    "Esforço comercial — reuniões: R1/R2 agendadas vs realizadas, no-shows e taxa de comparecimento, com a série mensal. Use para 'reuniões', 'no-show', 'comparecimento', 'R1 e R2', 'esforço comercial'.",
+  keywords: ["reuniões", "reunioes", "reunião", "reuniao", "no-show", "no show", "noshow", "comparecimento", "esforço comercial", "esforco comercial", "agendadas", "r1", "r2"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const m = data.meetingsOverview(principal);
+    const agendadas = m.r1Agendadas + m.r2Agendadas;
+    const realizadas = m.r1Realizadas + m.r2Realizadas;
+    const noShows = m.noShowR1 + m.noShowR2;
+    return {
+      narrative: `**${agendadas}** reuniões agendadas, **${realizadas}** realizadas (${formatPercent(1 - m.taxaNoShow)} de comparecimento).`,
+      cards: [
+        { type: "kpi", title: "Reuniões agendadas", value: formatNumber(agendadas), accent: "brand", caption: `R1 ${m.r1Agendadas} · R2 ${m.r2Agendadas}` },
+        { type: "kpi", title: "Reuniões realizadas", value: formatNumber(realizadas), accent: "emerald", caption: `R1 ${m.r1Realizadas} · R2 ${m.r2Realizadas}` },
+        { type: "kpi", title: "No-shows", value: formatNumber(noShows), accent: "rose", caption: `R1 ${m.noShowR1} · R2 ${m.noShowR2} · taxa ${formatPercent(m.taxaNoShow)}` },
+        { type: "kpi", title: "Taxa de comparecimento", value: formatPercent(1 - m.taxaNoShow), accent: "emerald", caption: `R1 ${formatPercent(m.taxaComparecimentoR1)} · R2 ${formatPercent(m.taxaComparecimentoR2)}` },
+        {
+          type: "combo",
+          title: "Reuniões agendadas vs realizadas",
+          categories: m.monthly.map((x) => formatMonth(x.month)),
+          bars: [
+            { name: "Agendadas", values: m.monthly.map((x) => x.agendadas), emphasis: "solid" },
+            { name: "Realizadas", values: m.monthly.map((x) => x.realizadas), emphasis: "soft" },
+          ],
+          line: { name: "No-shows", values: m.monthly.map((x) => x.noShows) },
+          valueFormat: "number",
+        },
+      ],
+    };
+  },
+};
+
+const funnelConversionTool: ToolDef = {
+  name: "funnel_conversion",
+  description:
+    "Conversão do funil de captação: R1 → R2 → Conta aberta, leads por conta, ticket médio estimado e tempo até abertura. Use para 'conversão do funil', 'funil de captação', 'contas abertas', 'tempo até abertura'.",
+  keywords: ["funil", "conversão do funil", "conversao do funil", "funil de captação", "funil de captacao", "contas abertas", "tempo até abertura", "tempo ate abertura", "gargalo"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const f = data.funnelConversion(principal);
+    return {
+      narrative: `Funil: **${f.r1Realizadas} R1 → ${f.r2Realizadas} R2 → ${f.contasAbertas} contas** (conversão total ${formatPercent(f.convTotal)}).`,
+      cards: [
+        {
+          type: "tree",
+          title: "Funil R1 → R2 → Conta",
+          caption: `Gargalo principal: R1 → R2 (${formatPercent(f.convR1R2)}).`,
+          root: {
+            label: "R1 realizadas",
+            value: formatNumber(f.r1Realizadas),
+            tone: "total",
+            children: [
+              {
+                label: "R2 realizadas",
+                value: formatNumber(f.r2Realizadas),
+                tone: "positive",
+                hint: `conversão ${formatPercent(f.convR1R2)}`,
+                children: [
+                  {
+                    label: "Contas abertas",
+                    value: formatNumber(f.contasAbertas),
+                    tone: "positive",
+                    hint: `conversão ${formatPercent(f.convR2Conta)}`,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        { type: "kpi", title: "Contas abertas", value: formatNumber(f.contasAbertas), accent: "emerald", caption: `não abriram (R2) ${f.naoAbriramConta} · ticket médio ${formatBRL(f.ticketMedioEstimado, { compact: true })} · ${f.leadsPorConta.toFixed(1)} leads p/ 1 conta` },
+        { type: "kpi", title: "Conversão total (R1 → Conta)", value: formatPercent(f.convTotal), accent: "amber" },
+        { type: "kpi", title: "Tempo médio até abertura", value: `${Math.round(f.tempoMedioAbertura)} dias`, accent: "brand", caption: `melhor ${f.melhorCaso} dias · pior ${f.piorCaso} dias` },
+      ],
+    };
+  },
+};
+
+const fupOverviewTool: ToolDef = {
+  name: "fup_overview",
+  description:
+    "Follow-up (FUP): FUPs realizados, taxa de conversão vs meta, leads recuperados de no-show e régua de contato, com a série mensal. Use para 'fup', 'follow-up', 'recuperados', 'régua de contato'.",
+  keywords: ["fup", "follow-up", "follow up", "followup", "recuperados", "régua de contato", "regua de contato", "régua", "regua"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const f = data.fupOverview(principal);
+    const META_FUP = 0.3;
+    return {
+      narrative: `**${f.realizados}** FUPs realizados com taxa de conversão de **${formatPercent(f.taxaConversao)}**.`,
+      cards: [
+        { type: "kpi", title: "FUPs realizados", value: formatNumber(f.realizados), accent: "brand", caption: `convertidos ${f.convertidos} · sem retorno ${f.semRetorno}` },
+        {
+          type: "kpi",
+          title: "Taxa de conversão FUP",
+          value: formatPercent(f.taxaConversao),
+          accent: f.taxaConversao >= META_FUP ? "emerald" : "amber",
+          goal: { target: formatPercent(META_FUP), pct: f.taxaConversao / META_FUP },
+        },
+        { type: "kpi", title: "Recuperados no FUP", value: formatNumber(f.convertidos), accent: "emerald", caption: `de no-show R1 ${f.recuperadosR1} · de no-show R2 ${f.recuperadosR2}` },
+        { type: "kpi", title: "Régua de contato", value: `${f.reguaMedia.toFixed(1)}x`, accent: "violet", caption: `melhor assessor ${f.melhorRegua.toFixed(1)}x · tentativas médias por lead` },
+        {
+          type: "combo",
+          title: "FUPs realizados vs convertidos",
+          categories: f.monthly.map((x) => formatMonth(x.month)),
+          bars: [{ name: "FUPs realizados", values: f.monthly.map((x) => x.realizados), emphasis: "soft" }],
+          line: { name: "Taxa de conversão", values: f.monthly.map((x) => x.taxa), valueFormat: "percent" },
+          valueFormat: "number",
+        },
+      ],
+    };
+  },
+};
+
+const pipeForecastTool: ToolDef = {
+  name: "pipe_forecast",
+  description:
+    "Pipe e forecast da prospecção: pipe frio (leads em R1), forecast com probabilidade de conversão aplicada e pipe quente (contas em abertura) com NNM projetado. Use para 'pipe', 'forecast', 'pipeline', 'NNM projetado'.",
+  keywords: ["pipe", "forecast", "pipeline", "pipe frio", "pipe quente", "nnm projetado", "projetado"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const p = data.pipeForecast(principal);
+    return {
+      narrative: `Pipe frio **${formatBRL(p.pipeFrio, { compact: true })}**, forecast **${formatBRL(p.forecast, { compact: true })}**, pipe quente **${formatBRL(p.pipeQuente, { compact: true })}**.`,
+      cards: [
+        { type: "kpi", title: "Pipe frio", value: formatBRL(p.pipeFrio, { compact: true }), accent: "brand", caption: `${p.leadsR1} leads em R1 agendada · ticket médio ${formatBRL(p.ticketMedioPipe, { compact: true })}` },
+        { type: "kpi", title: "Forecast", value: formatBRL(p.forecast, { compact: true }), accent: "amber", caption: `${p.leadsR2} leads em R2 · prob. de conversão ${formatPercent(p.probConversao)} aplicada` },
+        { type: "kpi", title: "Pipe quente", value: formatBRL(p.pipeQuente, { compact: true }), accent: "emerald", caption: `${p.emAbertura} em processo de abertura · NNM projetado ${formatBRL(p.pipeQuente, { compact: true })}` },
+      ],
+    };
+  },
+};
+
+const leadOriginsTool: ToolDef = {
+  name: "lead_origins",
+  description:
+    "Origem dos leads da prospecção: participação de cada canal e a conversão em conta por origem. Use para 'origem dos leads', 'canais', 'de onde vêm os leads', 'conversão por origem'.",
+  keywords: ["origem dos leads", "origem", "canais", "de onde vêm os leads", "de onde vem os leads", "conversão por origem", "conversao por origem", "indicação", "indicacao", "linkedin"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const rows = data.leadOrigins(principal);
+    const top = rows[0];
+    return {
+      narrative: top
+        ? `Principal canal: **${top.origem}** (${formatPercent(top.share)} dos leads).`
+        : "Sem leads no escopo.",
+      cards: [
+        {
+          type: "pie",
+          title: "Leads por origem",
+          valueFormat: "number",
+          data: rows.map((r) => ({ label: r.origem, value: r.leads })),
+        },
+        {
+          type: "table",
+          title: "Conversão por origem",
+          columns: [
+            { key: "origem", label: "Origem", align: "left" },
+            { key: "leads", label: "Leads", align: "right", format: "number" },
+            { key: "share", label: "Participação", align: "right", format: "percent" },
+            { key: "conversao", label: "Conversão em conta", align: "right", format: "percent" },
+          ],
+          rows: rows.map((r) => ({ origem: r.origem, leads: r.leads, share: r.share, conversao: r.conversao })),
+        },
+      ],
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   portfolioOverview,
   allocationByClass,
@@ -805,6 +978,11 @@ export const TOOLS: ToolDef[] = [
   portfolioPerformance,
   clientDetail,
   goalsTracker,
+  meetingsOverviewTool,
+  funnelConversionTool,
+  fupOverviewTool,
+  pipeForecastTool,
+  leadOriginsTool,
   teamRevenue,
   commissionByClass,
   teamRanking,

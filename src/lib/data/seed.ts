@@ -8,6 +8,9 @@ import type {
   GoalRecord,
   FlowBreakdown,
   NpsRecord,
+  FunnelRecord,
+  LeadOrigin,
+  FunnelPhase,
   AssetClass,
   Segment,
   RiskProfile,
@@ -207,6 +210,104 @@ export const flows: FlowBreakdown[] = advisors.map((a) => {
     activations: Math.round(between(3, 14)),
   };
 });
+
+// =============================================================================
+//  CRM prospecting funnel (mirrors the Pipefy sync view vw_louro_negocio).
+//  Deterministic synthetic cards with the SAME shape/rates as the real view —
+//  real names/e-mails never enter the repo; in production this comes straight
+//  from the database view.
+// =============================================================================
+
+const ORIGIN_WEIGHTS: [LeadOrigin, number][] = [
+  ["Linkedin", 0.45],
+  ["Cold call", 0.15],
+  ["Indicação", 0.12],
+  ["Lista do Assessor", 0.1],
+  ["Mídia Paga", 0.08],
+  ["Eventos", 0.06],
+  ["Outros", 0.04],
+];
+
+function pickOrigin(): LeadOrigin {
+  const r = rand();
+  let acc = 0;
+  for (const [origin, w] of ORIGIN_WEIGHTS) {
+    acc += w;
+    if (r < acc) return origin;
+  }
+  return "Outros";
+}
+
+export const funnel: FunnelRecord[] = [];
+let leadSeq = 0;
+
+for (const advisor of advisors) {
+  const leadCount = Math.round(between(30, 40));
+  for (let i = 0; i < leadCount; i++) {
+    leadSeq += 1;
+    const criadoMonth = MONTHS[Math.floor(rand() * MONTHS.length)];
+
+    const r1Agendada = rand() < 0.9;
+    const r1Realizada = r1Agendada && rand() < 0.78;
+    const noShowR1 = r1Agendada && !r1Realizada;
+    const r2Agendada = r1Realizada && rand() < 0.55;
+    const r2Realizada = r2Agendada && rand() < 0.82;
+    const noShowR2 = r2Agendada && !r2Realizada;
+
+    // FUP: worked no-shows (plus a slice of stale leads).
+    const passouFup = noShowR1 || noShowR2 || (!r1Agendada && rand() < 0.5);
+    const fupRealizado = passouFup && rand() < 0.85;
+    const fupConvertido = fupRealizado && rand() < 0.23;
+    const fupRecuperadoDe: FunnelRecord["fupRecuperadoDe"] = fupConvertido
+      ? noShowR2
+        ? "r2"
+        : "r1"
+      : null;
+
+    const contaAberta = (r2Realizada && rand() < 0.58) || (fupConvertido && rand() < 0.5);
+    const emAbertura = !contaAberta && r2Realizada && rand() < 0.35;
+    const descartado = !contaAberta && !emAbertura && rand() < 0.55;
+
+    const fase: FunnelPhase = contaAberta
+      ? "Finalizados"
+      : descartado
+      ? "Descartados/Perdidos"
+      : emAbertura
+      ? "Abertura de Conta - Aguardando"
+      : passouFup && !fupConvertido
+      ? "FUP"
+      : r2Agendada
+      ? "R2 Agendada"
+      : r1Agendada
+      ? "R1 Agendada"
+      : "Fase Inicial - Leads";
+
+    const ticket = round(between(80_000, 1_200_000), 10_000);
+    funnel.push({
+      cardId: `L-${String(leadSeq).padStart(4, "0")}`,
+      advisorId: advisor.id,
+      origem: pickOrigin(),
+      fase,
+      criadoMonth,
+      diasNoFunil: Math.round(between(2, 140)),
+      r1Agendada,
+      r1Realizada,
+      r2Agendada,
+      r2Realizada,
+      passouFup,
+      fupRealizado,
+      fupConvertido,
+      fupRecuperadoDe,
+      tentativasContato: Math.round(between(1, 6)),
+      contaAberta,
+      diasAteAbertura: contaAberta ? Math.round(between(7, 42)) : null,
+      pipeFrio: fase === "R1 Agendada" ? ticket : null,
+      pipeForecast: fase === "R2 Agendada" || fase === "FUP" ? ticket : null,
+      pipeQuente: fase === "Abertura de Conta - Aguardando" ? ticket : null,
+      descartado,
+    });
+  }
+}
 
 // NPS survey tallies per advisor for the period.
 export const nps: NpsRecord[] = advisors.map((a) => {

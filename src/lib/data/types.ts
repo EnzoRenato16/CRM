@@ -163,6 +163,61 @@ export interface NpsRecord {
   sent: number;
 }
 
+/**
+ * A prospecting card from the CRM funnel (mirrors the Pipefy sync view
+ * `vw_louro_negocio`, one row per lead/card). Booleans + timestamps follow the
+ * view's semantics; `null` timestamp = event never happened.
+ */
+export type LeadOrigin =
+  | "Linkedin"
+  | "Cold call"
+  | "Indicação"
+  | "Lista do Assessor"
+  | "Mídia Paga"
+  | "Eventos"
+  | "Outros";
+
+export type FunnelPhase =
+  | "Fase Inicial - Leads"
+  | "Trabalhado/Tentado"
+  | "R1 Agendada"
+  | "R2 Agendada"
+  | "FUP"
+  | "Ilha Forte"
+  | "Abertura de Conta - Aguardando"
+  | "Stand By"
+  | "Finalizados"
+  | "Descartados/Perdidos";
+
+export interface FunnelRecord {
+  cardId: string;
+  /** Owner advisor (maps the view's `responsavel` e-mail). */
+  advisorId: string;
+  origem: LeadOrigin;
+  fase: FunnelPhase;
+  /** ISO month of criado_em, e.g. "2026-03". */
+  criadoMonth: string;
+  diasNoFunil: number;
+  r1Agendada: boolean;
+  r1Realizada: boolean;
+  r2Agendada: boolean;
+  r2Realizada: boolean;
+  passouFup: boolean;
+  fupRealizado: boolean;
+  fupConvertido: boolean;
+  /** Which no-show the FUP recovered from (null = not a recovery). */
+  fupRecuperadoDe: "r1" | "r2" | null;
+  /** Contact attempts on this lead (régua de contato). */
+  tentativasContato: number;
+  contaAberta: boolean;
+  /** Days from lead creation to account opening (null if not opened). */
+  diasAteAbertura: number | null;
+  pipeFrio: number | null;
+  pipeForecast: number | null;
+  pipeQuente: number | null;
+  descartado: boolean;
+}
+
 /** A named numeric series point used by most aggregation results. */
 export interface SeriesPoint {
   label: string;

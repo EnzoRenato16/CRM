@@ -22,6 +22,12 @@ export interface BoardItem {
   id: string;
   label: string;
   tool: string;
+  /**
+   * The natural-language question that produced this card. When present, the
+   * board RE-RUNS it on load (through the secured /api/query), so the dashboard
+   * always reflects the current data instead of a frozen snapshot.
+   */
+  question?: string;
   cards: CardSpec[];
 }
 
@@ -38,6 +44,12 @@ export const BOARD_CATALOG: CatalogEntry[] = [
   { id: "custody", label: "Faixas de custódia", description: "Clientes por tamanho", question: "Faixas de custódia", roles: ["advisor", "manager"] },
   { id: "nps", label: "NPS", description: "Satisfação e taxa de resposta", question: "NPS e satisfação", roles: ["advisor", "manager"] },
   { id: "risk", label: "Perfil de risco", description: "Distribuição por suitability", question: "Distribuição por perfil de risco", roles: ["advisor", "manager"] },
+  // Prospecting funnel (CRM / Pipefy)
+  { id: "meetings", label: "Reuniões (R1/R2)", description: "Agendadas, realizadas e no-shows", question: "Reuniões agendadas vs realizadas e no-shows", roles: ["advisor", "manager"] },
+  { id: "funnel", label: "Conversão do funil", description: "R1 → R2 → Conta aberta", question: "Conversão do funil de captação", roles: ["advisor", "manager"] },
+  { id: "fup", label: "Follow-up (FUP)", description: "Conversão, recuperados, régua", question: "FUPs realizados e taxa de conversão", roles: ["advisor", "manager"] },
+  { id: "pipe", label: "Pipe & forecast", description: "Frio, forecast e quente", question: "Pipe e forecast da prospecção", roles: ["advisor", "manager"] },
+  { id: "origins", label: "Origem dos leads", description: "Canais e conversão por origem", question: "Origem dos leads e conversão por origem", roles: ["advisor", "manager"] },
   // Manager-only
   { id: "team-revenue", label: "Faturamento da equipe", description: "Receita, comissões e margem", question: "Faturamento da equipe", roles: ["manager"] },
   { id: "revenue-segment", label: "Receita por segmento", description: "Varejo / Private / Corporate", question: "Receita por segmento de cliente", roles: ["manager"] },

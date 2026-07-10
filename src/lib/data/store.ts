@@ -1,4 +1,4 @@
-import { advisors, clients, positions, cashFlows, performance, CDI_BY_MONTH, goals, flows, nps, TEAM } from "./seed";
+import { advisors, clients, positions, cashFlows, performance, CDI_BY_MONTH, goals, flows, nps, funnel, TEAM } from "./seed";
 import type {
   Advisor,
   Client,
@@ -9,6 +9,7 @@ import type {
   GoalRecord,
   FlowBreakdown,
   NpsRecord,
+  FunnelRecord,
 } from "./types";
 
 /**
@@ -32,4 +33,5 @@ export const db = {
   goals: goals as ReadonlyArray<GoalRecord>,
   flows: flows as ReadonlyArray<FlowBreakdown>,
   nps: nps as ReadonlyArray<NpsRecord>,
+  funnel: funnel as ReadonlyArray<FunnelRecord>,
 };

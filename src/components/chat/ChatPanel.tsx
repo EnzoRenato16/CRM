@@ -254,6 +254,9 @@ function AssistantMessage({
       id: newId(),
       label: question ?? response.meta.tool,
       tool: response.meta.tool,
+      // Carrying the question makes the pinned card LIVE: the board re-runs it
+      // on every visit, so it tracks the database instead of this snapshot.
+      question,
       cards: response.cards,
     });
     setPinned(true);

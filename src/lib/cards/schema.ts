@@ -114,6 +114,36 @@ export const treeCard = z.object({
   caption: z.string().optional(),
 });
 
+/**
+ * Combo chart: grouped bars plus an optional line on a secondary axis — the
+ * classic "agendadas vs realizadas + no-shows" commercial-funnel view.
+ */
+export const comboCard = z.object({
+  type: z.literal("combo"),
+  title: z.string(),
+  categories: z.array(z.string()).min(1),
+  bars: z
+    .array(
+      z.object({
+        name: z.string(),
+        values: z.array(z.number()),
+        /** solid = primary series; soft = lighter companion series. */
+        emphasis: z.enum(["solid", "soft"]).default("solid"),
+      })
+    )
+    .min(1)
+    .max(2),
+  line: z
+    .object({
+      name: z.string(),
+      values: z.array(z.number()),
+      valueFormat: valueFormat.optional(),
+    })
+    .optional(),
+  valueFormat,
+  caption: z.string().optional(),
+});
+
 export const cardSchema = z.discriminatedUnion("type", [
   kpiCard,
   pieCard,
@@ -122,6 +152,7 @@ export const cardSchema = z.discriminatedUnion("type", [
   tableCard,
   textCard,
   treeCard,
+  comboCard,
 ]);
 
 export const assistantResponseSchema = z.object({
@@ -143,5 +174,6 @@ export type LineCard = z.infer<typeof lineCard>;
 export type TableCard = z.infer<typeof tableCard>;
 export type TextCard = z.infer<typeof textCard>;
 export type TreeCard = z.infer<typeof treeCard>;
+export type ComboCard = z.infer<typeof comboCard>;
 export type CardSpec = z.infer<typeof cardSchema>;
 export type AssistantResponse = z.infer<typeof assistantResponseSchema>;

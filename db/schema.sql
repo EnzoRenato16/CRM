@@ -129,3 +129,20 @@ CREATE TABLE IF NOT EXISTS nps (
   detractors  integer NOT NULL,
   sent        integer NOT NULL
 );
+
+-- =============================================================================
+--  CRM prospecting funnel (Pipefy sync)
+--  In production the funnel tools read the sync view `vw_louro_negocio`
+--  (card_id, responsavel, origem_lead, fase_atual, r1_*/r2_* flags+timestamps,
+--  passou_fup/fup_realizado/fup_convertido, conta_aberta, pipe_frio/forecast/
+--  quente, descartado, criado_em, ...). Because RLS does not attach to plain
+--  views, expose it through this security-barrier view that scopes rows to the
+--  caller — the runtime twin is scopedFunnel() in secure-access.ts.
+-- =============================================================================
+
+-- CREATE VIEW vw_funnel_scoped WITH (security_barrier = true) AS
+--   SELECT * FROM vw_louro_negocio
+--   WHERE current_setting('app.current_role', true) = 'manager'
+--      OR responsavel = current_setting('app.current_user_email', true);
+-- GRANT SELECT ON vw_funnel_scoped TO app_advisor, app_manager;
+-- (Grant NO privileges on vw_louro_negocio itself to the app roles.)
