@@ -36,6 +36,23 @@ export function KpiCard({ spec }: { spec: KpiCardSpec }) {
           <span>{spec.delta.label}</span>
         </div>
       )}
+      {spec.goal && (
+        <div className="mt-3">
+          <div className="flex items-center justify-between text-xs font-medium">
+            <span className="text-ink-400">Meta {spec.goal.target}</span>
+            <span className={ACCENT[accent]}>{Math.round(spec.goal.pct * 100)}%</span>
+          </div>
+          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+            <div
+              className={`h-full rounded-full ${DOT[accent]}`}
+              style={{ width: `${Math.max(0, Math.min(100, spec.goal.pct * 100))}%` }}
+            />
+          </div>
+          {spec.goal.caption && (
+            <div className="mt-1.5 text-xs text-ink-400">{spec.goal.caption}</div>
+          )}
+        </div>
+      )}
       {spec.caption && (
         <div className="mt-1 text-xs text-ink-400">{spec.caption}</div>
       )}

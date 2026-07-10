@@ -14,9 +14,13 @@ import { CardShell } from "./CardShell";
 import { formatValue } from "./format";
 
 export function LineCard({ spec }: { spec: LineCardSpec }) {
+  // Text alternative so the trend isn't conveyed by the line alone.
+  const summary = `${spec.title}: ${spec.data
+    .map((d) => `${d.label}, ${formatValue(d.value, spec.valueFormat)}`)
+    .join("; ")}.`;
   return (
     <CardShell title={spec.title} caption={spec.caption} className="col-span-full lg:col-span-2">
-      <div className="mt-3 h-[220px]">
+      <div className="mt-3 h-[220px]" role="img" aria-label={summary}>
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={spec.data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
             <defs>

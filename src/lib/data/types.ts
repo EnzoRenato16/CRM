@@ -42,6 +42,26 @@ export const ASSET_CLASSES: AssetClass[] = [
 export type Segment = "Varejo" | "Private" | "Corporate";
 export type RiskProfile = "Conservador" | "Moderado" | "Arrojado";
 
+/** Ordinal risk level (1 = most conservative) shared by profiles and products. */
+export const RISK_PROFILE_LEVEL: Record<RiskProfile, 1 | 2 | 3> = {
+  Conservador: 1,
+  Moderado: 2,
+  Arrojado: 3,
+};
+
+/**
+ * Risk level of each asset class, used for suitability adherence: a position is
+ * "enquadrada" when the product's level is <= the client's profile level.
+ */
+export const ASSET_CLASS_RISK_LEVEL: Record<AssetClass, 1 | 2 | 3> = {
+  Caixa: 1,
+  "Renda Fixa": 1,
+  Previdência: 2,
+  Fundos: 2,
+  Multimercado: 3,
+  "Renda Variável": 3,
+};
+
 export interface Advisor {
   id: string;
   name: string;
@@ -74,6 +94,18 @@ export interface PositionRecord {
   advisorCommissionYtd: number;
 }
 
+/**
+ * A position with the commercially sensitive columns removed. This is the only
+ * shape the advisor-safe data primitives hand out, mirroring the PostgreSQL
+ * column GRANT that withholds revenue/commission columns from `app_advisor`
+ * (see db/policies.sql). Because the sensitive fields are absent from the type,
+ * a future advisor-reachable read that tried to forward them fails to compile.
+ */
+export type SafePositionRecord = Omit<
+  PositionRecord,
+  "grossRevenueYtd" | "advisorCommissionYtd"
+>;
+
 export interface CashFlowRecord {
   id: string;
   advisorId: string;
@@ -81,6 +113,109 @@ export interface CashFlowRecord {
   month: string;
   /** Captação líquida (net new money) in BRL. */
   netNewMoney: number;
+}
+
+/** Monthly portfolio return (rentabilidade) per advisor, as a fraction. */
+export interface PerformanceRecord {
+  advisorId: string;
+  /** ISO month, e.g. "2026-06". */
+  month: string;
+  /** Monthly return as a fraction, e.g. 0.012 = +1.2%. */
+  returnPct: number;
+}
+
+/** A benchmark point (e.g. CDI), month → return fraction. */
+export interface BenchmarkPoint {
+  month: string;
+  returnPct: number;
+}
+
+/** Period targets per advisor (metas). Realized values come from the data. */
+export interface GoalRecord {
+  advisorId: string;
+  /** Net new money (captação NNM) target for the period. */
+  nnmTarget: number;
+  /** Gross revenue target for the period (surfaced to managers only). */
+  receitaTarget: number;
+}
+
+/**
+ * NNM driver decomposition per advisor for the period. Reconciles with the cash
+ * flows: captacaoNew + captacaoBase + churnPf + churnPj = net new money.
+ * churn* are negative. Used for the NNM metric tree and churn/new-account views.
+ */
+export interface FlowBreakdown {
+  advisorId: string;
+  captacaoNew: number; // captação de contas novas
+  captacaoBase: number; // captação da base
+  churnPf: number; // negative
+  churnPj: number; // negative
+  activations: number; // contas novas vinculadas no período
+}
+
+/** NPS survey tallies per advisor for the period. */
+export interface NpsRecord {
+  advisorId: string;
+  promoters: number;
+  neutrals: number;
+  detractors: number;
+  /** Surveys sent (for response-rate). */
+  sent: number;
+}
+
+/**
+ * A prospecting card from the CRM funnel (mirrors the Pipefy sync view
+ * `vw_louro_negocio`, one row per lead/card). Booleans + timestamps follow the
+ * view's semantics; `null` timestamp = event never happened.
+ */
+export type LeadOrigin =
+  | "Linkedin"
+  | "Cold call"
+  | "Indicação"
+  | "Lista do Assessor"
+  | "Mídia Paga"
+  | "Eventos"
+  | "Outros";
+
+export type FunnelPhase =
+  | "Fase Inicial - Leads"
+  | "Trabalhado/Tentado"
+  | "R1 Agendada"
+  | "R2 Agendada"
+  | "FUP"
+  | "Ilha Forte"
+  | "Abertura de Conta - Aguardando"
+  | "Stand By"
+  | "Finalizados"
+  | "Descartados/Perdidos";
+
+export interface FunnelRecord {
+  cardId: string;
+  /** Owner advisor (maps the view's `responsavel` e-mail). */
+  advisorId: string;
+  origem: LeadOrigin;
+  fase: FunnelPhase;
+  /** ISO month of criado_em, e.g. "2026-03". */
+  criadoMonth: string;
+  diasNoFunil: number;
+  r1Agendada: boolean;
+  r1Realizada: boolean;
+  r2Agendada: boolean;
+  r2Realizada: boolean;
+  passouFup: boolean;
+  fupRealizado: boolean;
+  fupConvertido: boolean;
+  /** Which no-show the FUP recovered from (null = not a recovery). */
+  fupRecuperadoDe: "r1" | "r2" | null;
+  /** Contact attempts on this lead (régua de contato). */
+  tentativasContato: number;
+  contaAberta: boolean;
+  /** Days from lead creation to account opening (null if not opened). */
+  diasAteAbertura: number | null;
+  pipeFrio: number | null;
+  pipeForecast: number | null;
+  pipeQuente: number | null;
+  descartado: boolean;
 }
 
 /** A named numeric series point used by most aggregation results. */

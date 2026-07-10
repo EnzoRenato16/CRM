@@ -1,12 +1,15 @@
 import { db } from "./store";
 import type {
   Principal,
-  PositionRecord,
+  SafePositionRecord,
   Client,
   CashFlowRecord,
   SeriesPoint,
   AssetClass,
+  Segment,
+  RiskProfile,
 } from "./types";
+import { ASSET_CLASS_RISK_LEVEL, RISK_PROFILE_LEVEL } from "./types";
 
 /**
  * =============================================================================
@@ -64,9 +67,15 @@ function assertManager(principal: Principal, what: string): void {
 // can reach is derived from `scopedPositions` / `scopedClients`, which are
 // filtered to their advisorId before any aggregation happens.
 
-function scopedPositions(principal: Principal): ReadonlyArray<PositionRecord> {
-  if (principal.role === "manager") return db.positions;
-  return db.positions.filter((p) => p.advisorId === principal.advisorId);
+function scopedPositions(principal: Principal): ReadonlyArray<SafePositionRecord> {
+  const rows =
+    principal.role === "manager"
+      ? db.positions
+      : db.positions.filter((p) => p.advisorId === principal.advisorId);
+  // Strip the sensitive columns at the primitive itself — the runtime twin of
+  // the SQL column GRANT. Revenue/commission cannot flow past this point through
+  // any advisor-safe read; manager-only reads use db.positions directly.
+  return rows.map(({ grossRevenueYtd, advisorCommissionYtd, ...safe }) => safe);
 }
 
 function scopedClients(principal: Principal): ReadonlyArray<Client> {
@@ -231,6 +240,521 @@ export function netNewMoneyTotal(principal: Principal): number {
   return sumBy(scopedCashFlows(principal), (f) => f.netNewMoney);
 }
 
+// --- Goals / attainment (metas) ----------------------------------------------
+
+export interface GoalProgress {
+  label: string;
+  target: number;
+  realized: number;
+  /** Attainment 0..1 (can exceed 1). */
+  pct: number;
+  gap: number;
+}
+
+/**
+ * Goal attainment within scope. NNM applies to both roles; the revenue goal is
+ * commercial and returned only for managers (advisors never see revenue).
+ */
+export function goalsFor(principal: Principal): { nnm: GoalProgress; receita?: GoalProgress } {
+  const nnmTarget =
+    principal.role === "manager"
+      ? sumBy(db.goals, (g) => g.nnmTarget)
+      : db.goals.find((g) => g.advisorId === principal.advisorId)?.nnmTarget ?? 0;
+  const nnmRealized = netNewMoneyTotal(principal);
+  const nnm: GoalProgress = {
+    label: "Captação NNM",
+    target: nnmTarget,
+    realized: nnmRealized,
+    pct: nnmTarget ? nnmRealized / nnmTarget : 0,
+    gap: nnmTarget - nnmRealized,
+  };
+
+  if (principal.role === "manager") {
+    const recTarget = sumBy(db.goals, (g) => g.receitaTarget);
+    const recRealized = sumBy(db.positions, (p) => p.grossRevenueYtd);
+    return {
+      nnm,
+      receita: {
+        label: "Receita",
+        target: recTarget,
+        realized: recRealized,
+        pct: recTarget ? recRealized / recTarget : 0,
+        gap: recTarget - recRealized,
+      },
+    };
+  }
+  return { nnm };
+}
+
+// --- NNM driver decomposition (metric tree) ----------------------------------
+
+export interface NnmBreakdown {
+  nnmTotal: number;
+  captacao: number;
+  captacaoNew: number;
+  captacaoBase: number;
+  churn: number;
+  churnPf: number;
+  churnPj: number;
+  activations: number;
+  ticketMedio: number;
+}
+
+function scopedFlows(principal: Principal) {
+  return principal.role === "manager"
+    ? db.flows
+    : db.flows.filter((f) => f.advisorId === principal.advisorId);
+}
+
+export function nnmBreakdown(principal: Principal): NnmBreakdown {
+  const f = scopedFlows(principal);
+  const captacaoNew = sumBy(f, (x) => x.captacaoNew);
+  const captacaoBase = sumBy(f, (x) => x.captacaoBase);
+  const churnPf = sumBy(f, (x) => x.churnPf);
+  const churnPj = sumBy(f, (x) => x.churnPj);
+  const activations = sumBy(f, (x) => x.activations);
+  const captacao = captacaoNew + captacaoBase;
+  const churn = churnPf + churnPj;
+  return {
+    nnmTotal: captacao + churn,
+    captacao,
+    captacaoNew,
+    captacaoBase,
+    churn,
+    churnPf,
+    churnPj,
+    activations,
+    ticketMedio: activations ? captacaoNew / activations : 0,
+  };
+}
+
+// --- NPS (satisfação) --------------------------------------------------------
+
+export interface NpsOverview {
+  score: number;
+  responseRate: number;
+  promoters: number;
+  neutrals: number;
+  detractors: number;
+  responses: number;
+  sent: number;
+}
+
+function scopedNps(principal: Principal) {
+  return principal.role === "manager"
+    ? db.nps
+    : db.nps.filter((n) => n.advisorId === principal.advisorId);
+}
+
+export function npsOverview(principal: Principal): NpsOverview {
+  const n = scopedNps(principal);
+  const promoters = sumBy(n, (x) => x.promoters);
+  const neutrals = sumBy(n, (x) => x.neutrals);
+  const detractors = sumBy(n, (x) => x.detractors);
+  const sent = sumBy(n, (x) => x.sent);
+  const responses = promoters + neutrals + detractors;
+  return {
+    score: responses ? Math.round(((promoters - detractors) / responses) * 100) : 0,
+    responseRate: sent ? responses / sent : 0,
+    promoters,
+    neutrals,
+    detractors,
+    responses,
+    sent,
+  };
+}
+
+// --- Custody buckets (faixas de custódia) ------------------------------------
+
+export interface CustodyBucket {
+  bucket: string;
+  clients: number;
+  aum: number;
+}
+
+const CUSTODY_BUCKETS: { label: string; max: number }[] = [
+  { label: "< 300k", max: 300_000 },
+  { label: "300k – 1 Mi", max: 1_000_000 },
+  { label: "1 – 5 Mi", max: 5_000_000 },
+  { label: "5 – 10 Mi", max: 10_000_000 },
+  { label: "≥ 10 Mi", max: Infinity },
+];
+
+export function custodyBuckets(principal: Principal): CustodyBucket[] {
+  const byClient = new Map<string, number>();
+  for (const p of scopedPositions(principal)) {
+    byClient.set(p.clientId, (byClient.get(p.clientId) ?? 0) + p.marketValue);
+  }
+  const rows = CUSTODY_BUCKETS.map((b) => ({ bucket: b.label, clients: 0, aum: 0 }));
+  for (const aum of byClient.values()) {
+    let i = CUSTODY_BUCKETS.findIndex((b) => aum < b.max);
+    if (i === -1) i = CUSTODY_BUCKETS.length - 1;
+    rows[i].clients += 1;
+    rows[i].aum += aum;
+  }
+  return rows;
+}
+
+// --- CRM prospecting funnel (vw_louro_negocio) --------------------------------
+// Advisor-scoped like everything else: an advisor reads only their own leads.
+// In production these aggregations run as SQL over the Pipefy sync view.
+
+function scopedFunnel(principal: Principal) {
+  return principal.role === "manager"
+    ? db.funnel
+    : db.funnel.filter((l) => l.advisorId === principal.advisorId);
+}
+
+export interface MeetingsOverview {
+  r1Agendadas: number;
+  r2Agendadas: number;
+  r1Realizadas: number;
+  r2Realizadas: number;
+  noShowR1: number;
+  noShowR2: number;
+  taxaComparecimentoR1: number;
+  taxaComparecimentoR2: number;
+  taxaNoShow: number;
+  monthly: { month: string; agendadas: number; realizadas: number; noShows: number }[];
+}
+
+export function meetingsOverview(principal: Principal): MeetingsOverview {
+  const leads = scopedFunnel(principal);
+  const r1Agendadas = leads.filter((l) => l.r1Agendada).length;
+  const r1Realizadas = leads.filter((l) => l.r1Realizada).length;
+  const r2Agendadas = leads.filter((l) => l.r2Agendada).length;
+  const r2Realizadas = leads.filter((l) => l.r2Realizada).length;
+  const noShowR1 = r1Agendadas - r1Realizadas;
+  const noShowR2 = r2Agendadas - r2Realizadas;
+  const agendadas = r1Agendadas + r2Agendadas;
+
+  const byMonth = new Map<string, { agendadas: number; realizadas: number; noShows: number }>();
+  for (const l of leads) {
+    const m = byMonth.get(l.criadoMonth) ?? { agendadas: 0, realizadas: 0, noShows: 0 };
+    m.agendadas += (l.r1Agendada ? 1 : 0) + (l.r2Agendada ? 1 : 0);
+    m.realizadas += (l.r1Realizada ? 1 : 0) + (l.r2Realizada ? 1 : 0);
+    m.noShows += (l.r1Agendada && !l.r1Realizada ? 1 : 0) + (l.r2Agendada && !l.r2Realizada ? 1 : 0);
+    byMonth.set(l.criadoMonth, m);
+  }
+
+  return {
+    r1Agendadas,
+    r2Agendadas,
+    r1Realizadas,
+    r2Realizadas,
+    noShowR1,
+    noShowR2,
+    taxaComparecimentoR1: r1Agendadas ? r1Realizadas / r1Agendadas : 0,
+    taxaComparecimentoR2: r2Agendadas ? r2Realizadas / r2Agendadas : 0,
+    taxaNoShow: agendadas ? (noShowR1 + noShowR2) / agendadas : 0,
+    monthly: [...byMonth.entries()]
+      .map(([month, v]) => ({ month, ...v }))
+      .sort((a, b) => a.month.localeCompare(b.month)),
+  };
+}
+
+export interface FunnelConversion {
+  r1Realizadas: number;
+  r2Realizadas: number;
+  contasAbertas: number;
+  convR1R2: number;
+  convR2Conta: number;
+  convTotal: number;
+  naoAbriramConta: number;
+  leadsPorConta: number;
+  ticketMedioEstimado: number;
+  tempoMedioAbertura: number;
+  melhorCaso: number;
+  piorCaso: number;
+}
+
+export function funnelConversion(principal: Principal): FunnelConversion {
+  const leads = scopedFunnel(principal);
+  const r1 = leads.filter((l) => l.r1Realizada).length;
+  const r2 = leads.filter((l) => l.r2Realizada).length;
+  const contas = leads.filter((l) => l.contaAberta).length;
+  const tickets = leads
+    .map((l) => l.pipeFrio ?? l.pipeForecast ?? l.pipeQuente)
+    .filter((v): v is number => v != null && v > 1);
+  const dias = leads
+    .map((l) => l.diasAteAbertura)
+    .filter((v): v is number => v != null);
+  return {
+    r1Realizadas: r1,
+    r2Realizadas: r2,
+    contasAbertas: contas,
+    convR1R2: r1 ? r2 / r1 : 0,
+    convR2Conta: r2 ? contas / r2 : 0,
+    convTotal: r1 ? contas / r1 : 0,
+    // Counted directly: accounts can open via FUP recovery without an R2, so
+    // `contas` is NOT a subset of `r2` and subtraction would undercount.
+    naoAbriramConta: leads.filter((l) => l.r2Realizada && !l.contaAberta).length,
+    leadsPorConta: contas ? r1 / contas : 0,
+    ticketMedioEstimado: tickets.length ? tickets.reduce((a, b) => a + b, 0) / tickets.length : 0,
+    tempoMedioAbertura: dias.length ? dias.reduce((a, b) => a + b, 0) / dias.length : 0,
+    melhorCaso: dias.length ? Math.min(...dias) : 0,
+    piorCaso: dias.length ? Math.max(...dias) : 0,
+  };
+}
+
+export interface FupOverview {
+  realizados: number;
+  convertidos: number;
+  semRetorno: number;
+  taxaConversao: number;
+  recuperadosR1: number;
+  recuperadosR2: number;
+  reguaMedia: number;
+  melhorRegua: number;
+  monthly: { month: string; realizados: number; taxa: number }[];
+}
+
+export function fupOverview(principal: Principal): FupOverview {
+  const leads = scopedFunnel(principal);
+  const done = leads.filter((l) => l.fupRealizado);
+  const converted = done.filter((l) => l.fupConvertido);
+  const tentativas = leads.filter((l) => l.passouFup).map((l) => l.tentativasContato);
+
+  // Best per-advisor average contact cadence within scope (régua de contato).
+  const byAdvisor = new Map<string, number[]>();
+  for (const l of leads) {
+    if (!l.passouFup) continue;
+    byAdvisor.set(l.advisorId, [...(byAdvisor.get(l.advisorId) ?? []), l.tentativasContato]);
+  }
+  const advisorAvgs = [...byAdvisor.values()].map(
+    (arr) => arr.reduce((a, b) => a + b, 0) / arr.length
+  );
+
+  const byMonth = new Map<string, { realizados: number; convertidos: number }>();
+  for (const l of done) {
+    const m = byMonth.get(l.criadoMonth) ?? { realizados: 0, convertidos: 0 };
+    m.realizados += 1;
+    if (l.fupConvertido) m.convertidos += 1;
+    byMonth.set(l.criadoMonth, m);
+  }
+
+  return {
+    realizados: done.length,
+    convertidos: converted.length,
+    semRetorno: done.length - converted.length,
+    taxaConversao: done.length ? converted.length / done.length : 0,
+    recuperadosR1: converted.filter((l) => l.fupRecuperadoDe === "r1").length,
+    recuperadosR2: converted.filter((l) => l.fupRecuperadoDe === "r2").length,
+    reguaMedia: tentativas.length ? tentativas.reduce((a, b) => a + b, 0) / tentativas.length : 0,
+    melhorRegua: advisorAvgs.length ? Math.max(...advisorAvgs) : 0,
+    monthly: [...byMonth.entries()]
+      .map(([month, v]) => ({ month, realizados: v.realizados, taxa: v.realizados ? v.convertidos / v.realizados : 0 }))
+      .sort((a, b) => a.month.localeCompare(b.month)),
+  };
+}
+
+export interface PipeForecast {
+  pipeFrio: number;
+  leadsR1: number;
+  ticketMedioPipe: number;
+  forecast: number;
+  leadsR2: number;
+  probConversao: number;
+  pipeQuente: number;
+  emAbertura: number;
+}
+
+export function pipeForecast(principal: Principal): PipeForecast {
+  const leads = scopedFunnel(principal);
+  const frio = leads.filter((l) => l.pipeFrio != null && l.pipeFrio > 1);
+  const fore = leads.filter((l) => l.pipeForecast != null && l.pipeForecast > 1);
+  const quente = leads.filter((l) => l.pipeQuente != null && l.pipeQuente > 1);
+  const conv = funnelConversion(principal);
+  const pipeFrio = frio.reduce((a, l) => a + (l.pipeFrio ?? 0), 0);
+  const forecastRaw = fore.reduce((a, l) => a + (l.pipeForecast ?? 0), 0);
+  // A real 0% conversion must NOT be replaced by the 50% prior — only the
+  // absence of R2 history justifies falling back to the neutral assumption.
+  const probConversao = conv.r2Realizadas > 0 ? conv.convR2Conta : 0.5;
+  return {
+    pipeFrio,
+    leadsR1: frio.length,
+    ticketMedioPipe: frio.length ? pipeFrio / frio.length : 0,
+    forecast: forecastRaw * probConversao,
+    leadsR2: fore.length,
+    probConversao,
+    pipeQuente: quente.reduce((a, l) => a + (l.pipeQuente ?? 0), 0),
+    emAbertura: quente.length,
+  };
+}
+
+export interface OriginRow {
+  origem: string;
+  leads: number;
+  share: number;
+  conversao: number;
+}
+
+export function leadOrigins(principal: Principal): OriginRow[] {
+  const leads = scopedFunnel(principal);
+  const total = leads.length || 1;
+  const byOrigin = new Map<string, { leads: number; contas: number }>();
+  for (const l of leads) {
+    const cur = byOrigin.get(l.origem) ?? { leads: 0, contas: 0 };
+    cur.leads += 1;
+    if (l.contaAberta) cur.contas += 1;
+    byOrigin.set(l.origem, cur);
+  }
+  return [...byOrigin.entries()]
+    .map(([origem, v]) => ({
+      origem,
+      leads: v.leads,
+      share: v.leads / total,
+      conversao: v.leads ? v.contas / v.leads : 0,
+    }))
+    .sort((a, b) => b.leads - a.leads);
+}
+
+// --- Suitability adherence (compliance) --------------------------------------
+
+export interface SuitabilityResult {
+  /** Share of AUM invested within the client's risk profile (0..1). */
+  pctAdherent: number;
+  adherentAum: number;
+  misalignedAum: number;
+  /** Clients holding products riskier than their profile, worst first. */
+  misalignedClients: {
+    name: string;
+    profile: RiskProfile;
+    misalignedAum: number;
+    worstClass: AssetClass;
+  }[];
+}
+
+export function suitabilityAdherence(principal: Principal): SuitabilityResult {
+  const clientById = new Map(scopedClients(principal).map((c) => [c.id, c]));
+  let adherentAum = 0;
+  let misalignedAum = 0;
+  const perClient = new Map<
+    string,
+    { name: string; profile: RiskProfile; misalignedAum: number; worstLevel: number; worstClass: AssetClass }
+  >();
+
+  for (const p of scopedPositions(principal)) {
+    const client = clientById.get(p.clientId);
+    if (!client) continue;
+    const clientLevel = RISK_PROFILE_LEVEL[client.riskProfile];
+    const productLevel = ASSET_CLASS_RISK_LEVEL[p.assetClass];
+    if (productLevel <= clientLevel) {
+      adherentAum += p.marketValue;
+    } else {
+      misalignedAum += p.marketValue;
+      const cur =
+        perClient.get(client.id) ??
+        { name: client.name, profile: client.riskProfile, misalignedAum: 0, worstLevel: 0, worstClass: p.assetClass };
+      cur.misalignedAum += p.marketValue;
+      if (productLevel > cur.worstLevel) {
+        cur.worstLevel = productLevel;
+        cur.worstClass = p.assetClass;
+      }
+      perClient.set(client.id, cur);
+    }
+  }
+
+  const total = adherentAum + misalignedAum || 1;
+  return {
+    pctAdherent: adherentAum / total,
+    adherentAum,
+    misalignedAum,
+    misalignedClients: [...perClient.values()]
+      .map(({ name, profile, misalignedAum: aum, worstClass }) => ({ name, profile, misalignedAum: aum, worstClass }))
+      .sort((a, b) => b.misalignedAum - a.misalignedAum),
+  };
+}
+
+// --- Portfolio performance (rentabilidade) -----------------------------------
+
+/** Monthly return series within scope. Advisor: own; manager: AUM-weighted avg. */
+export function performanceByMonth(principal: Principal): SeriesPoint[] {
+  if (principal.role === "manager") {
+    const aumByAdvisor = new Map<string, number>();
+    for (const p of db.positions) {
+      aumByAdvisor.set(p.advisorId, (aumByAdvisor.get(p.advisorId) ?? 0) + p.marketValue);
+    }
+    const totalAumAll = [...aumByAdvisor.values()].reduce((a, b) => a + b, 0) || 1;
+    const byMonth = new Map<string, number>();
+    for (const r of db.performance) {
+      const weight = (aumByAdvisor.get(r.advisorId) ?? 0) / totalAumAll;
+      byMonth.set(r.month, (byMonth.get(r.month) ?? 0) + r.returnPct * weight);
+    }
+    return [...byMonth.entries()]
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+  return db.performance
+    .filter((r) => r.advisorId === principal.advisorId)
+    .map((r) => ({ label: r.month, value: r.returnPct }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Compounded return over the period within scope. */
+export function cumulativeReturn(principal: Principal): number {
+  return performanceByMonth(principal).reduce((acc, p) => acc * (1 + p.value), 1) - 1;
+}
+
+/** CDI benchmark series (public — carries no advisor-scoped or sensitive data). */
+export function benchmarkByMonth(): SeriesPoint[] {
+  return db.cdi
+    .map((c) => ({ label: c.month, value: c.returnPct }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+export function benchmarkCumulative(): number {
+  return db.cdi.reduce((acc, c) => acc * (1 + c.returnPct), 1) - 1;
+}
+
+// --- Client lookup / drill-down (scope-aware) --------------------------------
+
+export interface ClientDetail {
+  name: string;
+  segment: Segment;
+  riskProfile: RiskProfile;
+  aum: number;
+  allocation: SeriesPoint[];
+  topProducts: SeriesPoint[];
+}
+
+function normalizeName(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+/**
+ * Find a client by name WITHIN the caller's scope. An advisor searching for
+ * another advisor's client gets null — we never reveal that the client exists.
+ */
+export function findClient(principal: Principal, query: string): ClientDetail | null {
+  const qTokens = new Set(normalizeName(query).split(/\s+/).filter((t) => t.length > 1));
+  if (qTokens.size === 0) return null;
+
+  let best: Client | null = null;
+  let bestScore = 0;
+  for (const c of scopedClients(principal)) {
+    const nameTokens = normalizeName(c.name).split(/\s+/);
+    const score = nameTokens.reduce((acc, t) => acc + (qTokens.has(t) ? 1 : 0), 0);
+    if (score > bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+  if (!best || bestScore === 0) return null;
+
+  const pos = scopedPositions(principal).filter((p) => p.clientId === best!.id);
+  return {
+    name: best.name,
+    segment: best.segment,
+    riskProfile: best.riskProfile,
+    aum: sumBy(pos, (p) => p.marketValue),
+    allocation: groupSum(pos, (p) => p.assetClass, (p) => p.marketValue).sort((a, b) => b.value - a.value),
+    topProducts: groupSum(pos, (p) => p.product, (p) => p.marketValue)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5),
+  };
+}
+
 // =============================================================================
 //  MANAGER-ONLY READS  (fail-closed; advisors get an AuthorizationError)
 //  These are the only methods that expose revenue/commission or another
@@ -329,4 +853,53 @@ export function firmTotals(principal: Principal) {
     advisors: db.advisors.length,
     grossRevenueYtd: sumBy(db.positions, (p) => p.grossRevenueYtd),
   };
+}
+
+export interface SegmentRevenueRow {
+  segment: Segment;
+  aum: number;
+  revenue: number;
+  commission: number;
+  margin: number;
+}
+
+/** Revenue, commission and margin by client segment — commercial, manager-only. */
+export function revenueBySegment(principal: Principal): SegmentRevenueRow[] {
+  assertManager(principal, "receita por segmento de cliente");
+  const clientSegment = new Map(db.clients.map((c) => [c.id, c.segment]));
+  const bySegment = new Map<Segment, { aum: number; revenue: number; commission: number }>();
+  for (const p of db.positions) {
+    const segment = clientSegment.get(p.clientId) ?? "Varejo";
+    const cur = bySegment.get(segment) ?? { aum: 0, revenue: 0, commission: 0 };
+    cur.aum += p.marketValue;
+    cur.revenue += p.grossRevenueYtd;
+    cur.commission += p.advisorCommissionYtd;
+    bySegment.set(segment, cur);
+  }
+  return [...bySegment.entries()]
+    .map(([segment, v]) => ({ segment, ...v, margin: v.revenue - v.commission }))
+    .sort((a, b) => b.revenue - a.revenue);
+}
+
+export interface RoaOverview {
+  roa: number;
+  grossRevenue: number;
+  aum: number;
+  byAdvisor: SeriesPoint[];
+}
+
+/** ROA (receita bruta / custódia) — commercial, so manager-only. */
+export function roaOverview(principal: Principal): RoaOverview {
+  assertManager(principal, "ROA (receita sobre custódia)");
+  const grossRevenue = sumBy(db.positions, (p) => p.grossRevenueYtd);
+  const aum = sumBy(db.positions, (p) => p.marketValue);
+  const byAdvisor = db.advisors
+    .map((a) => {
+      const pos = db.positions.filter((p) => p.advisorId === a.id);
+      const rev = sumBy(pos, (p) => p.grossRevenueYtd);
+      const au = sumBy(pos, (p) => p.marketValue);
+      return { label: a.name, value: au ? rev / au : 0 };
+    })
+    .sort((a, b) => b.value - a.value);
+  return { roa: aum ? grossRevenue / aum : 0, grossRevenue, aum, byAdvisor };
 }

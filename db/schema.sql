@@ -12,6 +12,9 @@
 CREATE SCHEMA IF NOT EXISTS advisory;
 SET search_path TO advisory, public;
 
+-- Case-insensitive email column type used by advisors.email below.
+CREATE EXTENSION IF NOT EXISTS citext;
+
 -- App-level roles map onto Postgres roles.
 DO $$
 BEGIN
@@ -61,3 +64,85 @@ CREATE TABLE IF NOT EXISTS cash_flows (
   net_new_money  numeric(18,2) NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cash_flows_advisor ON cash_flows(advisor_id);
+
+-- Integrity: a position's advisor_id must always match its client's advisor_id.
+-- RLS on positions filters purely by positions.advisor_id, so if these two ever
+-- diverged (e.g. a client reassigned without updating their positions) a
+-- position could surface in the wrong advisor's scoped view. This trigger makes
+-- that state unrepresentable.
+CREATE OR REPLACE FUNCTION advisory.check_position_advisor_matches_client()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.advisor_id <> (SELECT advisor_id FROM advisory.clients WHERE id = NEW.client_id) THEN
+    RAISE EXCEPTION
+      'positions.advisor_id (%) must match clients.advisor_id for client %',
+      NEW.advisor_id, NEW.client_id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_position_advisor_consistency ON positions;
+CREATE TRIGGER trg_position_advisor_consistency
+  BEFORE INSERT OR UPDATE ON positions
+  FOR EACH ROW EXECUTE FUNCTION advisory.check_position_advisor_matches_client();
+
+-- =============================================================================
+--  Analytics / operational tables (goals, performance, flows, NPS)
+--  The in-memory store's secure-access layer maps 1:1 onto these; point the
+--  data layer here to serve the same cards from real data.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS advisor_goals (
+  advisor_id     text PRIMARY KEY REFERENCES advisors(id),
+  nnm_target     numeric(18,2) NOT NULL,
+  -- Commercial (sensitive): revenue target — managers only via column GRANT.
+  receita_target numeric(18,2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS advisor_performance (
+  advisor_id  text NOT NULL REFERENCES advisors(id),
+  month       text NOT NULL,            -- 'YYYY-MM'
+  return_pct  numeric(8,6) NOT NULL,    -- monthly return as a fraction
+  PRIMARY KEY (advisor_id, month)
+);
+CREATE INDEX IF NOT EXISTS idx_perf_advisor ON advisor_performance(advisor_id);
+
+CREATE TABLE IF NOT EXISTS cdi_benchmark (
+  month       text PRIMARY KEY,
+  return_pct  numeric(8,6) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_breakdown (
+  advisor_id    text PRIMARY KEY REFERENCES advisors(id),
+  captacao_new  numeric(18,2) NOT NULL,
+  captacao_base numeric(18,2) NOT NULL,
+  churn_pf      numeric(18,2) NOT NULL,   -- negative
+  churn_pj      numeric(18,2) NOT NULL,   -- negative
+  activations   integer NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS nps (
+  advisor_id  text PRIMARY KEY REFERENCES advisors(id),
+  promoters   integer NOT NULL,
+  neutrals    integer NOT NULL,
+  detractors  integer NOT NULL,
+  sent        integer NOT NULL
+);
+
+-- =============================================================================
+--  CRM prospecting funnel (Pipefy sync)
+--  In production the funnel tools read the sync view `vw_louro_negocio`
+--  (card_id, responsavel, origem_lead, fase_atual, r1_*/r2_* flags+timestamps,
+--  passou_fup/fup_realizado/fup_convertido, conta_aberta, pipe_frio/forecast/
+--  quente, descartado, criado_em, ...). Because RLS does not attach to plain
+--  views, expose it through this security-barrier view that scopes rows to the
+--  caller — the runtime twin is scopedFunnel() in secure-access.ts.
+-- =============================================================================
+
+-- CREATE VIEW vw_funnel_scoped WITH (security_barrier = true) AS
+--   SELECT * FROM vw_louro_negocio
+--   WHERE current_setting('app.current_role', true) = 'manager'
+--      OR responsavel = current_setting('app.current_user_email', true);
+-- GRANT SELECT ON vw_funnel_scoped TO app_advisor, app_manager;
+-- (Grant NO privileges on vw_louro_negocio itself to the app roles.)

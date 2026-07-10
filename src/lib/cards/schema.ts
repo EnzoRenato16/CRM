@@ -26,6 +26,14 @@ export const kpiCard = z.object({
       direction: z.enum(["up", "down", "flat"]),
     })
     .optional(),
+  /** Optional goal tracking: renders a progress bar (Realizado vs Objetivo). */
+  goal: z
+    .object({
+      target: z.string(), // pre-formatted target
+      pct: z.number(), // 0..1 attainment
+      caption: z.string().optional(),
+    })
+    .optional(),
   caption: z.string().optional(),
   accent: z.enum(["brand", "emerald", "amber", "rose", "violet"]).default("brand"),
 });
@@ -77,6 +85,65 @@ export const textCard = z.object({
   tone: z.enum(["neutral", "warning"]).default("neutral"),
 });
 
+/**
+ * A metric-tree / driver decomposition (e.g. NNM = Captação − Churn …). Recursive
+ * node structure; each node carries a pre-formatted value and a tone.
+ */
+export type TreeNode = {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: "total" | "positive" | "negative" | "neutral";
+  children?: TreeNode[];
+};
+
+const treeNode: z.ZodType<TreeNode> = z.lazy(() =>
+  z.object({
+    label: z.string(),
+    value: z.string(),
+    hint: z.string().optional(),
+    tone: z.enum(["total", "positive", "negative", "neutral"]).optional(),
+    children: z.array(treeNode).optional(),
+  })
+);
+
+export const treeCard = z.object({
+  type: z.literal("tree"),
+  title: z.string(),
+  root: treeNode,
+  caption: z.string().optional(),
+});
+
+/**
+ * Combo chart: grouped bars plus an optional line on a secondary axis — the
+ * classic "agendadas vs realizadas + no-shows" commercial-funnel view.
+ */
+export const comboCard = z.object({
+  type: z.literal("combo"),
+  title: z.string(),
+  categories: z.array(z.string()).min(1),
+  bars: z
+    .array(
+      z.object({
+        name: z.string(),
+        values: z.array(z.number()),
+        /** solid = primary series; soft = lighter companion series. */
+        emphasis: z.enum(["solid", "soft"]).default("solid"),
+      })
+    )
+    .min(1)
+    .max(2),
+  line: z
+    .object({
+      name: z.string(),
+      values: z.array(z.number()),
+      valueFormat: valueFormat.optional(),
+    })
+    .optional(),
+  valueFormat,
+  caption: z.string().optional(),
+});
+
 export const cardSchema = z.discriminatedUnion("type", [
   kpiCard,
   pieCard,
@@ -84,6 +151,8 @@ export const cardSchema = z.discriminatedUnion("type", [
   lineCard,
   tableCard,
   textCard,
+  treeCard,
+  comboCard,
 ]);
 
 export const assistantResponseSchema = z.object({
@@ -104,5 +173,7 @@ export type BarCard = z.infer<typeof barCard>;
 export type LineCard = z.infer<typeof lineCard>;
 export type TableCard = z.infer<typeof tableCard>;
 export type TextCard = z.infer<typeof textCard>;
+export type TreeCard = z.infer<typeof treeCard>;
+export type ComboCard = z.infer<typeof comboCard>;
 export type CardSpec = z.infer<typeof cardSchema>;
 export type AssistantResponse = z.infer<typeof assistantResponseSchema>;

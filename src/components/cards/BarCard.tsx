@@ -19,10 +19,14 @@ export function BarCard({ spec }: { spec: BarCardSpec }) {
   const height = Math.max(160, spec.data.length * 40 + 24);
   // Single-hue magnitude bars (not a rainbow) — color carries no extra meaning.
   const fill = "var(--series-1)";
+  // Text alternative so the chart's data isn't purely visual.
+  const summary = `${spec.title}: ${spec.data
+    .map((d) => `${d.label}, ${formatValue(d.value, spec.valueFormat)}`)
+    .join("; ")}.`;
 
   return (
     <CardShell title={spec.title} caption={spec.caption} className="col-span-full lg:col-span-2">
-      <div className="mt-3" style={{ height }}>
+      <div className="mt-3" style={{ height }} role="img" aria-label={summary}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
             data={spec.data}

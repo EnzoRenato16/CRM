@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type { AssistantResponse } from "@/lib/cards/schema";
 import { CardGrid } from "@/components/cards/CardRenderer";
 import { renderInlineMarkdown } from "@/components/cards/markdown";
+import { printReport } from "@/lib/report";
+import { pinToBoard, newId } from "@/lib/board";
 
 type Message =
   | { id: number; kind: "user"; text: string }
@@ -12,21 +14,24 @@ type Message =
 
 interface Props {
   userName: string;
+  userEmail: string;
   role: "advisor" | "manager";
   scopeLabel: string;
   suggestions: string[];
   llmEngine: "anthropic" | "rule-based";
 }
 
-export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }: Props) {
+export function ChatPanel({ userName, userEmail, role, scopeLabel, suggestions, llmEngine }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    bottomRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
   }, [messages, loading]);
 
   async function send(text: string) {
@@ -52,6 +57,8 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
       setMessages((m) => [...m, { id: seq.current++, kind: "error", text: "Erro de rede." }]);
     } finally {
       setLoading(false);
+      // Return focus to the composer so keyboard users can keep asking.
+      inputRef.current?.focus();
     }
   }
 
@@ -60,14 +67,31 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-5xl px-4 py-6">
+        <div
+          className="mx-auto w-full max-w-5xl px-4 py-6"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="Conversa com o copiloto"
+        >
           {empty ? (
             <EmptyState userName={userName} role={role} suggestions={suggestions} onPick={send} />
           ) : (
             <div className="space-y-6">
-              {messages.map((m) => (
-                <MessageView key={m.id} message={m} />
-              ))}
+              {messages.map((m, i) => {
+                const prev = messages[i - 1];
+                const question = m.kind === "assistant" && prev?.kind === "user" ? prev.text : undefined;
+                return (
+                  <MessageView
+                    key={m.id}
+                    message={m}
+                    scopeLabel={scopeLabel}
+                    userName={userName}
+                    userEmail={userEmail}
+                    question={question}
+                  />
+                );
+              })}
               {loading && <Thinking />}
               <div ref={bottomRef} />
             </div>
@@ -96,6 +120,8 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
                 }
                 className="w-full bg-transparent px-4 py-3 text-sm outline-none"
                 maxLength={500}
+                ref={inputRef}
+                aria-label="Escreva a sua pergunta"
               />
             </div>
             <button
@@ -167,7 +193,19 @@ function EmptyState({
   );
 }
 
-function MessageView({ message }: { message: Message }) {
+function MessageView({
+  message,
+  scopeLabel,
+  userName,
+  userEmail,
+  question,
+}: {
+  message: Message;
+  scopeLabel: string;
+  userName: string;
+  userEmail: string;
+  question?: string;
+}) {
   if (message.kind === "user") {
     return (
       <div className="flex justify-end">
@@ -184,7 +222,46 @@ function MessageView({ message }: { message: Message }) {
       </div>
     );
   }
-  const { response } = message;
+  return (
+    <AssistantMessage
+      response={message.response}
+      scopeLabel={scopeLabel}
+      userName={userName}
+      userEmail={userEmail}
+      question={question}
+    />
+  );
+}
+
+function AssistantMessage({
+  response,
+  scopeLabel,
+  userName,
+  userEmail,
+  question,
+}: {
+  response: AssistantResponse;
+  scopeLabel: string;
+  userName: string;
+  userEmail: string;
+  question?: string;
+}) {
+  const [pinned, setPinned] = useState(false);
+  const actionable = response.meta.tool !== "help" && response.meta.tool !== "access_denied";
+
+  function pin() {
+    pinToBoard(userEmail, {
+      id: newId(),
+      label: question ?? response.meta.tool,
+      tool: response.meta.tool,
+      // Carrying the question makes the pinned card LIVE: the board re-runs it
+      // on every visit, so it tracks the database instead of this snapshot.
+      question,
+      cards: response.cards,
+    });
+    setPinned(true);
+  }
+
   return (
     <div className="space-y-3">
       {response.narrative && (
@@ -197,10 +274,37 @@ function MessageView({ message }: { message: Message }) {
       )}
       <div className="sm:pl-11">
         <CardGrid cards={response.cards} />
-        {response.meta.tool !== "help" && response.meta.tool !== "access_denied" && (
-          <p className="mt-2 text-[11px] text-ink-400">
-            gerado por IA · ferramenta <code className="rounded bg-ink-100 px-1 dark:bg-ink-800">{response.meta.tool}</code>
-          </p>
+        {actionable && (
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <p className="text-[11px] text-ink-400">
+              gerado por IA · ferramenta <code className="rounded bg-ink-100 px-1 dark:bg-ink-800">{response.meta.tool}</code>
+            </p>
+            <button
+              type="button"
+              onClick={() => printReport(response, { scopeLabel, userName, userQuestion: question })}
+              className="inline-flex items-center gap-1 rounded-md border border-ink-200 px-2 py-1 text-[11px] font-medium text-ink-500 transition hover:border-brand-400 hover:text-brand-600 dark:border-ink-700 dark:hover:border-brand-500"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M6 14h12v8H6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Exportar PDF
+            </button>
+            <button
+              type="button"
+              onClick={pin}
+              disabled={pinned}
+              className="inline-flex items-center gap-1 rounded-md border border-ink-200 px-2 py-1 text-[11px] font-medium text-ink-500 transition hover:border-brand-400 hover:text-brand-600 disabled:border-emerald-300 disabled:text-emerald-600 dark:border-ink-700 dark:hover:border-brand-500 dark:disabled:border-emerald-500/40 dark:disabled:text-emerald-400"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                {pinned ? (
+                  <path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                ) : (
+                  <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                )}
+              </svg>
+              {pinned ? "Fixado no painel" : "Fixar no painel"}
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -219,7 +323,7 @@ function Avatar() {
 
 function Thinking() {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3" role="status" aria-label="Gerando resposta">
       <Avatar />
       <div className="flex items-center gap-1.5 rounded-2xl rounded-tl-md border border-ink-200 bg-white px-4 py-3 shadow-sm dark:border-ink-800 dark:bg-ink-900">
         {[0, 1, 2].map((i) => (
@@ -229,6 +333,7 @@ function Thinking() {
             style={{ animationDelay: `${i * 120}ms` }}
           />
         ))}
+        <span className="sr-only">Gerando resposta…</span>
       </div>
     </div>
   );

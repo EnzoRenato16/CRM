@@ -1,6 +1,8 @@
+import { z } from "zod";
 import type { Principal, Role, AssetClass } from "@/lib/data/types";
 import { ASSET_CLASSES } from "@/lib/data/types";
 import * as data from "@/lib/data/secure-access";
+import type { GoalProgress } from "@/lib/data/secure-access";
 import type { CardSpec } from "@/lib/cards/schema";
 import { formatBRL, formatPercent, formatNumber, formatMonth } from "@/lib/format";
 
@@ -19,14 +21,21 @@ export interface ToolDef {
   requiredRole?: Role;
   /** Keywords for the offline rule-based router (PT-BR). */
   keywords: string[];
-  /** JSON schema of parameters, used as the Anthropic tool input_schema. */
-  jsonSchema: Record<string, unknown>;
+  /**
+   * The single source of truth for this tool's parameters. The orchestrator
+   * validates the model/router-supplied input against this Zod schema BEFORE
+   * `run` executes, so `run` always receives already-safe, typed params and no
+   * tool has to re-implement its own defensive checks. Also drives the Anthropic
+   * tool input_schema (see anthropic.ts).
+   */
+  params: z.ZodTypeAny;
   /** Extract parameters from raw text for the offline router. */
   extract?: (text: string) => Record<string, unknown>;
-  run: (ctx: ToolContext, params: Record<string, unknown>) => ToolResult;
+  /** May be sync today or async once the store becomes a real database. */
+  run: (ctx: ToolContext, params: Record<string, unknown>) => ToolResult | Promise<ToolResult>;
 }
 
-const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
+const NO_PARAMS = z.object({}).strip();
 
 function detectAssetClass(text: string): AssetClass | null {
   const t = text.toLowerCase();
@@ -48,7 +57,7 @@ const portfolioOverview: ToolDef = {
   description:
     "Resumo geral da carteira em escopo: patrimônio sob custódia (AUM), número de clientes, captação do mês e alocação por classe de ativo. Use para pedidos amplos como 'resumo da minha carteira', 'visão geral', 'como está meu portfólio'.",
   keywords: ["resumo", "visão geral", "visao geral", "panorama", "portfólio", "portfolio", "carteira", "overview", "como está", "como estao"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const scope = data.getScope(principal);
     const aum = data.totalAum(principal);
@@ -104,7 +113,7 @@ const allocationByClass: ToolDef = {
   description:
     "Distribuição do portfólio por classe de ativo (Renda Fixa, Renda Variável, Fundos, Multimercado, Previdência, Caixa). Use para 'alocação', 'distribuição do portfólio', 'como está dividido'.",
   keywords: ["alocação", "alocacao", "distribuição", "distribuicao", "dividido", "classe de ativo", "classes", "mix"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const allocation = data.allocationByAssetClass(principal);
     const total = allocation.reduce((a, b) => a + b.value, 0);
@@ -137,24 +146,19 @@ const assetClassDetail: ToolDef = {
   description:
     "Detalhe de uma classe de ativo específica: total investido, participação no portfólio e quebra por produto. Informe o parâmetro assetClass. Use para 'resumo da renda fixa', 'quanto tenho em ações', 'detalhe da previdência'.",
   keywords: ["renda fixa", "renda variável", "renda variavel", "ações", "acoes", "previdência", "previdencia", "multimercado", "fundos", "caixa", "detalhe", "quanto tenho em"],
-  jsonSchema: {
-    type: "object",
-    properties: {
-      assetClass: {
-        type: "string",
-        enum: ASSET_CLASSES,
-        description: "A classe de ativo a detalhar.",
-      },
-    },
-    required: ["assetClass"],
-    additionalProperties: false,
-  },
+  // Unknown/absent class is coerced to a safe default by the schema itself.
+  params: z.object({
+    assetClass: z
+      .enum(ASSET_CLASSES as unknown as [AssetClass, ...AssetClass[]])
+      .catch("Renda Fixa"),
+  }),
   extract: (text) => {
     const cls = detectAssetClass(text);
     return cls ? { assetClass: cls } : {};
   },
   run: ({ principal }, params) => {
-    const assetClass = (params.assetClass as AssetClass) ?? "Renda Fixa";
+    // params is already validated against the schema above.
+    const { assetClass } = params as { assetClass: AssetClass };
     const summary = data.assetClassSummary(principal, assetClass);
     return {
       narrative: `Em **${assetClass}** há ${formatBRL(summary.total, {
@@ -185,19 +189,21 @@ const topClients: ToolDef = {
   description:
     "Maiores clientes por patrimônio no escopo, com segmento e perfil de risco. Parâmetro opcional limit (padrão 5). Use para 'meus maiores clientes', 'top 10 clientes'.",
   keywords: ["maiores clientes", "top clientes", "principais clientes", "ranking de clientes", "maiores contas"],
-  jsonSchema: {
-    type: "object",
-    properties: {
-      limit: { type: "integer", minimum: 1, maximum: 20, description: "Quantos clientes retornar." },
-    },
-    additionalProperties: false,
-  },
+  // The schema coerces, defaults, then clamps to a safe integer range [1, 20];
+  // run trusts it. (min/max would reject → default; a transform actually clamps.)
+  params: z.object({
+    limit: z
+      .coerce.number()
+      .int()
+      .catch(5)
+      .transform((n) => Math.min(20, Math.max(1, n))),
+  }),
   extract: (text) => {
     const m = text.match(/\b(\d{1,2})\b/);
-    return m ? { limit: Math.min(20, Math.max(1, Number(m[1]))) } : {};
+    return m ? { limit: Number(m[1]) } : {};
   },
   run: ({ principal }, params) => {
-    const limit = (params.limit as number) ?? 5;
+    const { limit } = params as { limit: number };
     const clients = data.topClients(principal, limit);
     return {
       narrative: `Top ${clients.length} clientes por patrimônio.`,
@@ -228,7 +234,7 @@ const netNewMoney: ToolDef = {
   description:
     "Captação líquida (net new money) por mês no escopo, com total do período. Use para 'captação', 'quanto captei', 'evolução da captação'.",
   keywords: ["captação", "captacao", "captei", "net new money", "nnm", "entrada de recursos", "resgates"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const series = data.netNewMoneyByMonth(principal);
     const total = data.netNewMoneyTotal(principal);
@@ -257,8 +263,8 @@ const riskDistribution: ToolDef = {
   name: "risk_distribution",
   description:
     "Distribuição do patrimônio por perfil de risco (suitability): Conservador, Moderado, Arrojado. Use para 'perfil de risco', 'suitability', 'aderência de risco'.",
-  keywords: ["perfil de risco", "risco", "suitability", "conservador", "moderado", "arrojado", "aderência"],
-  jsonSchema: EMPTY_SCHEMA,
+  keywords: ["perfil de risco", "distribuição de risco", "distribuicao de risco", "risco", "conservador", "moderado", "arrojado"],
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const dist = data.riskDistribution(principal);
     return {
@@ -278,7 +284,7 @@ const teamRevenue: ToolDef = {
     "RESTRITO A GESTORES. Receita bruta, comissões dos assessores e margem da empresa (YTD), com quebra por assessor. Use para 'faturamento da equipe', 'receita', 'comissões'.",
   requiredRole: "manager",
   keywords: ["receita", "faturamento", "comissão", "comissao", "comissões", "comissoes", "margem", "rentabilidade da equipe", "quanto a empresa"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const summary = data.commissionSummary(principal);
     const byAdvisor = data.revenueByAdvisor(principal);
@@ -326,7 +332,7 @@ const commissionByClass: ToolDef = {
     "RESTRITO A GESTORES. Receita e comissão por classe de ativo (YTD). Use para 'comissão por produto', 'de onde vem a receita'.",
   requiredRole: "manager",
   keywords: ["comissão por classe", "receita por classe", "receita por produto", "de onde vem a receita", "margem por produto"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const summary = data.commissionSummary(principal);
     return {
@@ -360,7 +366,7 @@ const teamRanking: ToolDef = {
     "RESTRITO A GESTORES. Ranking dos assessores por AUM e por captação líquida. Use para 'ranking da equipe', 'AUM por assessor', 'quem captou mais'.",
   requiredRole: "manager",
   keywords: ["ranking", "por assessor", "equipe", "quem captou", "aum por assessor", "melhores assessores", "comparar assessores"],
-  jsonSchema: EMPTY_SCHEMA,
+  params: NO_PARAMS,
   run: ({ principal }) => {
     const aum = data.aumByAdvisor(principal);
     const nnm = data.netNewMoneyByAdvisor(principal);
@@ -374,16 +380,614 @@ const teamRanking: ToolDef = {
   },
 };
 
+// --- Suitability adherence (compliance, both roles) --------------------------
+
+const suitabilityAdherence: ToolDef = {
+  name: "suitability_adherence",
+  description:
+    "Aderência de suitability: quanto do patrimônio está investido em produtos compatíveis com o perfil de risco de cada cliente, e a lista de clientes desenquadrados (exposição acima do perfil). Use para 'aderência de suitability', 'enquadramento', 'clientes desenquadrados', 'compliance de risco'.",
+  keywords: ["suitability", "aderência", "aderencia", "enquadramento", "desenquadrado", "desenquadramento", "adequação de perfil", "adequacao de perfil", "compliance de risco"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const s = data.suitabilityAdherence(principal);
+    const cards: CardSpec[] = [
+      {
+        type: "kpi",
+        title: "AUM aderente ao perfil",
+        value: formatPercent(s.pctAdherent),
+        accent: s.pctAdherent >= 0.9 ? "emerald" : s.pctAdherent >= 0.75 ? "amber" : "rose",
+        caption: `${formatBRL(s.adherentAum, { compact: true })} aderente · ${formatBRL(s.misalignedAum, { compact: true })} acima do perfil`,
+      },
+      {
+        type: "pie",
+        title: "Enquadramento por AUM",
+        valueFormat: "brl_compact",
+        data: [
+          { label: "Aderente", value: s.adherentAum },
+          { label: "Acima do perfil", value: s.misalignedAum },
+        ],
+      },
+    ];
+    if (s.misalignedClients.length > 0) {
+      cards.push({
+        type: "table",
+        title: "Clientes desenquadrados (exposição acima do perfil)",
+        columns: [
+          { key: "name", label: "Cliente", align: "left" },
+          { key: "profile", label: "Perfil", align: "left" },
+          { key: "worstClass", label: "Classe acima do perfil", align: "left" },
+          { key: "misalignedAum", label: "Exposição", align: "right", format: "brl_compact" },
+        ],
+        rows: s.misalignedClients.slice(0, 10).map((c) => ({
+          name: c.name,
+          profile: c.profile,
+          worstClass: c.worstClass,
+          misalignedAum: c.misalignedAum,
+        })),
+      });
+    } else {
+      cards.push({
+        type: "text",
+        title: "Tudo enquadrado",
+        tone: "neutral",
+        body: "Nenhum cliente com exposição acima do seu perfil de risco. **100% aderente.**",
+      });
+    }
+    return {
+      narrative: `**${formatPercent(s.pctAdherent)}** do patrimônio está aderente ao perfil de suitability dos clientes.`,
+      cards,
+    };
+  },
+};
+
+// --- Portfolio performance / rentabilidade (both roles) ----------------------
+
+const portfolioPerformance: ToolDef = {
+  name: "portfolio_performance",
+  description:
+    "Rentabilidade da carteira no período: retorno acumulado, comparação com o CDI e a evolução mês a mês. Use para 'rentabilidade', 'quanto rendeu', 'retorno da carteira', 'performance', 'rendimento'.",
+  keywords: ["rentabilidade", "retorno", "rendimento", "performance", "quanto rendeu", "quanto rendi", "valorização", "valorizacao", "rende"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const series = data.performanceByMonth(principal);
+    const cum = data.cumulativeReturn(principal);
+    const cdiCum = data.benchmarkCumulative();
+    const excess = cum - cdiCum;
+    return {
+      narrative: `Retorno acumulado de **${formatPercent(cum)}** no período (CDI: ${formatPercent(cdiCum)}).`,
+      cards: [
+        {
+          type: "kpi",
+          title: "Retorno acumulado (período)",
+          value: formatPercent(cum),
+          accent: cum >= 0 ? "emerald" : "rose",
+          delta: { label: cum >= 0 ? "positivo" : "negativo", direction: cum >= 0 ? "up" : "down" },
+        },
+        {
+          type: "kpi",
+          title: "vs CDI",
+          value: `${excess >= 0 ? "+" : ""}${formatPercent(excess)}`,
+          accent: excess >= 0 ? "emerald" : "amber",
+          delta: { label: excess >= 0 ? "acima do CDI" : "abaixo do CDI", direction: excess >= 0 ? "up" : "down" },
+          caption: `CDI no período: ${formatPercent(cdiCum)}`,
+        },
+        {
+          type: "line",
+          title: "Rentabilidade mês a mês",
+          valueFormat: "percent",
+          data: series.map((p) => ({ label: formatMonth(p.label), value: p.value })),
+        },
+      ],
+    };
+  },
+};
+
+// --- Client detail / drill-down (both roles, scope-aware) --------------------
+
+const clientDetail: ToolDef = {
+  name: "client_detail",
+  description:
+    "Resumo da carteira de um cliente específico (patrimônio, perfil, segmento e alocação), respeitando o escopo do usuário. Informe o nome do cliente. Use para 'resumo do cliente Fulano', 'carteira do cliente X', 'posição do cliente'.",
+  keywords: ["resumo do cliente", "carteira do cliente", "detalhe do cliente", "conta do cliente", "posição do cliente", "posicao do cliente", "dados do cliente", "cliente chamado"],
+  params: z.object({ query: z.string().catch("") }),
+  extract: (text) => ({ query: text }),
+  run: ({ principal }, params) => {
+    const query = (params as { query?: string }).query ?? "";
+    const client = data.findClient(principal, query);
+    if (!client) {
+      return {
+        narrative: "",
+        cards: [
+          {
+            type: "text",
+            title: "Cliente não encontrado",
+            tone: "warning",
+            body: "Não encontrei um cliente com esse nome na sua carteira. Confira o nome — você só tem acesso aos seus próprios clientes.",
+          },
+        ],
+      };
+    }
+    return {
+      narrative: `**${client.name}** — ${client.segment}, perfil ${client.riskProfile} · ${formatBRL(client.aum, { compact: true })} sob custódia.`,
+      cards: [
+        {
+          type: "kpi",
+          title: "Patrimônio do cliente",
+          value: formatBRL(client.aum, { compact: true }),
+          caption: `${client.segment} · ${client.riskProfile}`,
+          accent: "brand",
+        },
+        {
+          type: "pie",
+          title: `Alocação — ${client.name}`,
+          valueFormat: "brl_compact",
+          data: client.allocation,
+        },
+        {
+          type: "table",
+          title: "Principais produtos",
+          columns: [
+            { key: "label", label: "Produto", align: "left" },
+            { key: "value", label: "Valor", align: "right", format: "brl_compact" },
+          ],
+          rows: client.topProducts.map((p) => ({ label: p.label, value: p.value })),
+        },
+      ],
+    };
+  },
+};
+
+// --- Revenue by client segment (manager-only) --------------------------------
+
+const revenueBySegment: ToolDef = {
+  name: "revenue_by_segment",
+  description:
+    "RESTRITO A GESTORES. Receita, comissão e margem por segmento de cliente (Varejo, Private, Corporate). Use para 'receita por segmento', 'faturamento por tipo de cliente', 'de onde vem a receita por segmento'.",
+  requiredRole: "manager",
+  keywords: ["por segmento", "segmento", "varejo", "private", "corporate", "receita por segmento", "por tipo de cliente", "household"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const rows = data.revenueBySegment(principal);
+    return {
+      narrative: "Receita bruta e margem por segmento de cliente (YTD).",
+      cards: [
+        {
+          type: "bar",
+          title: "Receita bruta por segmento",
+          orientation: "horizontal",
+          valueFormat: "brl_compact",
+          data: rows.map((r) => ({ label: r.segment, value: r.revenue })),
+        },
+        {
+          type: "table",
+          title: "Receita, comissão e margem por segmento",
+          columns: [
+            { key: "segment", label: "Segmento", align: "left" },
+            { key: "aum", label: "AUM", align: "right", format: "brl_compact" },
+            { key: "revenue", label: "Receita YTD", align: "right", format: "brl_compact" },
+            { key: "commission", label: "Comissão YTD", align: "right", format: "brl_compact" },
+            { key: "margin", label: "Margem YTD", align: "right", format: "brl_compact" },
+          ],
+          rows: rows.map((r) => ({
+            segment: r.segment,
+            aum: r.aum,
+            revenue: r.revenue,
+            commission: r.commission,
+            margin: r.margin,
+          })),
+        },
+      ],
+    };
+  },
+};
+
+// --- Goals / attainment (metas, both roles) ----------------------------------
+
+function goalKpi(g: GoalProgress, accent: "brand" | "emerald"): CardSpec {
+  return {
+    type: "kpi",
+    title: g.label,
+    value: formatBRL(g.realized, { compact: true }),
+    accent,
+    goal: {
+      target: formatBRL(g.target, { compact: true }),
+      pct: Math.max(0, g.pct),
+      caption: `GAP ${formatBRL(g.gap, { compact: true })} · projeção depende do ritmo`,
+    },
+  };
+}
+
+const goalsTracker: ToolDef = {
+  name: "goals_tracker",
+  description:
+    "Metas e atingimento: realizado vs objetivo de captação (NNM) — e de receita, para gestores — com GAP e percentual de atingimento. Use para 'minhas metas', 'objetivo', 'atingimento', 'quanto falta para a meta'.",
+  keywords: ["meta", "metas", "objetivo", "objetivos", "atingimento", "gap", "quanto falta"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const g = data.goalsFor(principal);
+    const cards: CardSpec[] = [goalKpi(g.nnm, "brand")];
+    if (g.receita) cards.push(goalKpi(g.receita, "emerald"));
+    return {
+      narrative: `Atingimento de captação: **${formatPercent(g.nnm.pct)}** da meta.`,
+      cards,
+    };
+  },
+};
+
+// --- NNM metric tree / decomposition (both roles) ----------------------------
+
+const nnmBreakdownTool: ToolDef = {
+  name: "nnm_breakdown",
+  description:
+    "Decomposição da captação líquida: NNM = Captação − Churn; Captação = Contas Novas + Base; Contas Novas = Ativações × Ticket Médio. Use para 'de onde vem a captação', 'árvore de NNM', 'NNM consolidado', 'decomposição da captação'.",
+  keywords: ["nnm consolidado", "decomposição", "decomposicao", "de onde vem a captação", "de onde vem a captacao", "árvore de nnm", "arvore de nnm", "visão consolidada", "visao consolidada", "nnm total"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const b = data.nnmBreakdown(principal);
+    const brl = (v: number) => formatBRL(v, { compact: true });
+    return {
+      narrative: `NNM de **${brl(b.nnmTotal)}** = captação ${brl(b.captacao)} − churn ${brl(Math.abs(b.churn))}.`,
+      cards: [
+        {
+          type: "tree",
+          title: "NNM — visão consolidada",
+          caption: "Captação − Churn, decompostos até ativações × ticket médio.",
+          root: {
+            label: "NNM Total",
+            value: brl(b.nnmTotal),
+            tone: "total",
+            children: [
+              {
+                label: "Captação",
+                value: brl(b.captacao),
+                tone: "positive",
+                hint: "NNM mensal > 0",
+                children: [
+                  {
+                    label: "Contas Novas",
+                    value: brl(b.captacaoNew),
+                    tone: "neutral",
+                    children: [
+                      { label: "Ativações", value: formatNumber(b.activations), tone: "neutral", hint: "contas no período" },
+                      { label: "Ticket Médio", value: brl(b.ticketMedio), tone: "neutral", hint: "NET / conta nova" },
+                    ],
+                  },
+                  { label: "Captação da Base", value: brl(b.captacaoBase), tone: "neutral" },
+                ],
+              },
+              {
+                label: "Churn",
+                value: brl(b.churn),
+                tone: "negative",
+                hint: "NNM mensal < 0",
+                children: [
+                  { label: "Churn PF", value: brl(b.churnPf), tone: "neutral" },
+                  { label: "Churn PJ", value: brl(b.churnPj), tone: "neutral" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    };
+  },
+};
+
+// --- Churn + new accounts (both roles) ---------------------------------------
+
+const churnOverviewTool: ToolDef = {
+  name: "churn_overview",
+  description:
+    "Churn e contas novas: churn total (PF/PJ) e a captação de contas novas com ativações e ticket médio. Use para 'churn', 'evasão', 'contas novas', 'ativações', 'ticket médio'.",
+  keywords: ["churn", "evasão", "evasao", "contas novas", "conta nova", "ativações", "ativacoes", "ticket médio", "ticket medio"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const b = data.nnmBreakdown(principal);
+    const brl = (v: number) => formatBRL(v, { compact: true });
+    return {
+      narrative: `Churn de **${brl(b.churn)}** e ${formatNumber(b.activations)} contas novas no período.`,
+      cards: [
+        { type: "kpi", title: "Churn NNM total", value: brl(b.churn), accent: "rose", delta: { label: "saída de recursos", direction: "down" } },
+        { type: "kpi", title: "Contas novas (captação)", value: brl(b.captacaoNew), accent: "emerald", caption: `${formatNumber(b.activations)} ativações · ticket ${brl(b.ticketMedio)}` },
+        {
+          type: "bar",
+          title: "Churn por tipo de cliente",
+          orientation: "horizontal",
+          valueFormat: "brl_compact",
+          data: [
+            { label: "Churn PF", value: b.churnPf },
+            { label: "Churn PJ", value: b.churnPj },
+          ],
+        },
+      ],
+    };
+  },
+};
+
+// --- NPS / satisfação (both roles) -------------------------------------------
+
+const npsOverviewTool: ToolDef = {
+  name: "nps_overview",
+  description:
+    "NPS (satisfação): score, taxa de resposta e distribuição entre promotores, neutros e detratores. Use para 'nps', 'satisfação', 'pesquisa de satisfação', 'promotores'.",
+  keywords: ["nps", "satisfação", "satisfacao", "pesquisa de satisfação", "pesquisa de satisfacao", "promotores", "detratores", "net promoter"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const n = data.npsOverview(principal);
+    return {
+      narrative: `NPS de **${n.score}** com ${formatPercent(n.responseRate)} de taxa de resposta.`,
+      cards: [
+        { type: "kpi", title: "NPS", value: String(n.score), accent: n.score >= 70 ? "emerald" : n.score >= 50 ? "amber" : "rose" },
+        { type: "kpi", title: "Taxa de resposta", value: formatPercent(n.responseRate), accent: "brand", caption: `${formatNumber(n.responses)} de ${formatNumber(n.sent)} enviados` },
+        {
+          type: "pie",
+          title: "Respostas por tipo",
+          valueFormat: "number",
+          data: [
+            { label: "Promotores", value: n.promoters },
+            { label: "Neutros", value: n.neutrals },
+            { label: "Detratores", value: n.detractors },
+          ],
+        },
+      ],
+    };
+  },
+};
+
+// --- Custody buckets / faixas de custódia (both roles) -----------------------
+
+const custodyBucketsTool: ToolDef = {
+  name: "custody_buckets",
+  description:
+    "Faixas de custódia: número de clientes e patrimônio por faixa de tamanho (<300k, 300k–1Mi, 1–5Mi, 5–10Mi, ≥10Mi). Use para 'faixas de custódia', 'clientes por faixa', 'segmentação por tamanho'.",
+  keywords: ["faixa de custódia", "faixas de custódia", "faixas de custodia", "faixa de custodia", "clientes por faixa", "por tamanho", "segmentação por tamanho", "faixa de patrimônio"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const rows = data.custodyBuckets(principal);
+    return {
+      narrative: "Distribuição de clientes e patrimônio por faixa de custódia.",
+      cards: [
+        {
+          type: "bar",
+          title: "Patrimônio por faixa",
+          orientation: "horizontal",
+          valueFormat: "brl_compact",
+          data: rows.map((r) => ({ label: r.bucket, value: r.aum })),
+        },
+        {
+          type: "table",
+          title: "Clientes e patrimônio por faixa",
+          columns: [
+            { key: "bucket", label: "Faixa", align: "left" },
+            { key: "clients", label: "Clientes", align: "right", format: "number" },
+            { key: "aum", label: "Patrimônio", align: "right", format: "brl_compact" },
+          ],
+          rows: rows.map((r) => ({ bucket: r.bucket, clients: r.clients, aum: r.aum })),
+        },
+      ],
+    };
+  },
+};
+
+// --- ROA (manager-only) ------------------------------------------------------
+
+const roaOverviewTool: ToolDef = {
+  name: "roa_overview",
+  description:
+    "RESTRITO A GESTORES. ROA (receita bruta sobre custódia) da mesa e por assessor. Use para 'roa', 'receita sobre custódia', 'return on assets'.",
+  requiredRole: "manager",
+  keywords: ["roa", "receita sobre custódia", "receita sobre custodia", "return on assets"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const r = data.roaOverview(principal);
+    return {
+      narrative: `ROA da mesa: **${formatPercent(r.roa)}** (receita ${formatBRL(r.grossRevenue, { compact: true })} sobre ${formatBRL(r.aum, { compact: true })}).`,
+      cards: [
+        { type: "kpi", title: "ROA da mesa", value: formatPercent(r.roa), accent: "emerald", caption: "Receita bruta ÷ custódia" },
+        { type: "bar", title: "ROA por assessor", orientation: "horizontal", valueFormat: "percent", data: r.byAdvisor },
+      ],
+    };
+  },
+};
+
+// =============================================================================
+//  CRM PROSPECTING FUNNEL (vw_louro_negocio) — commercial effort tools
+// =============================================================================
+
+const meetingsOverviewTool: ToolDef = {
+  name: "meetings_overview",
+  description:
+    "Esforço comercial — reuniões: R1/R2 agendadas vs realizadas, no-shows e taxa de comparecimento, com a série mensal. Use para 'reuniões', 'no-show', 'comparecimento', 'R1 e R2', 'esforço comercial'.",
+  keywords: ["reuniões", "reunioes", "reunião", "reuniao", "no-show", "no show", "noshow", "comparecimento", "esforço comercial", "esforco comercial", "agendadas", "r1", "r2"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const m = data.meetingsOverview(principal);
+    const agendadas = m.r1Agendadas + m.r2Agendadas;
+    const realizadas = m.r1Realizadas + m.r2Realizadas;
+    const noShows = m.noShowR1 + m.noShowR2;
+    return {
+      narrative: `**${agendadas}** reuniões agendadas, **${realizadas}** realizadas (${formatPercent(1 - m.taxaNoShow)} de comparecimento).`,
+      cards: [
+        { type: "kpi", title: "Reuniões agendadas", value: formatNumber(agendadas), accent: "brand", caption: `R1 ${m.r1Agendadas} · R2 ${m.r2Agendadas}` },
+        { type: "kpi", title: "Reuniões realizadas", value: formatNumber(realizadas), accent: "emerald", caption: `R1 ${m.r1Realizadas} · R2 ${m.r2Realizadas}` },
+        { type: "kpi", title: "No-shows", value: formatNumber(noShows), accent: "rose", caption: `R1 ${m.noShowR1} · R2 ${m.noShowR2} · taxa ${formatPercent(m.taxaNoShow)}` },
+        { type: "kpi", title: "Taxa de comparecimento", value: formatPercent(1 - m.taxaNoShow), accent: "emerald", caption: `R1 ${formatPercent(m.taxaComparecimentoR1)} · R2 ${formatPercent(m.taxaComparecimentoR2)}` },
+        {
+          type: "combo",
+          title: "Reuniões agendadas vs realizadas",
+          categories: m.monthly.map((x) => formatMonth(x.month)),
+          bars: [
+            { name: "Agendadas", values: m.monthly.map((x) => x.agendadas), emphasis: "solid" },
+            { name: "Realizadas", values: m.monthly.map((x) => x.realizadas), emphasis: "soft" },
+          ],
+          line: { name: "No-shows", values: m.monthly.map((x) => x.noShows) },
+          valueFormat: "number",
+        },
+      ],
+    };
+  },
+};
+
+const funnelConversionTool: ToolDef = {
+  name: "funnel_conversion",
+  description:
+    "Conversão do funil de captação: R1 → R2 → Conta aberta, leads por conta, ticket médio estimado e tempo até abertura. Use para 'conversão do funil', 'funil de captação', 'contas abertas', 'tempo até abertura'.",
+  keywords: ["funil", "conversão do funil", "conversao do funil", "funil de captação", "funil de captacao", "contas abertas", "tempo até abertura", "tempo ate abertura", "gargalo"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const f = data.funnelConversion(principal);
+    return {
+      narrative: `Funil: **${f.r1Realizadas} R1 → ${f.r2Realizadas} R2 → ${f.contasAbertas} contas** (conversão total ${formatPercent(f.convTotal)}).`,
+      cards: [
+        {
+          type: "tree",
+          title: "Funil R1 → R2 → Conta",
+          caption: `Gargalo principal: R1 → R2 (${formatPercent(f.convR1R2)}).`,
+          root: {
+            label: "R1 realizadas",
+            value: formatNumber(f.r1Realizadas),
+            tone: "total",
+            children: [
+              {
+                label: "R2 realizadas",
+                value: formatNumber(f.r2Realizadas),
+                tone: "positive",
+                hint: `conversão ${formatPercent(f.convR1R2)}`,
+                children: [
+                  {
+                    label: "Contas abertas",
+                    value: formatNumber(f.contasAbertas),
+                    tone: "positive",
+                    hint: `conversão ${formatPercent(f.convR2Conta)}`,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        { type: "kpi", title: "Contas abertas", value: formatNumber(f.contasAbertas), accent: "emerald", caption: `não abriram (R2) ${f.naoAbriramConta} · ticket médio ${formatBRL(f.ticketMedioEstimado, { compact: true })} · ${f.leadsPorConta.toFixed(1)} leads p/ 1 conta` },
+        { type: "kpi", title: "Conversão total (R1 → Conta)", value: formatPercent(f.convTotal), accent: "amber" },
+        { type: "kpi", title: "Tempo médio até abertura", value: `${Math.round(f.tempoMedioAbertura)} dias`, accent: "brand", caption: `melhor ${f.melhorCaso} dias · pior ${f.piorCaso} dias` },
+      ],
+    };
+  },
+};
+
+const fupOverviewTool: ToolDef = {
+  name: "fup_overview",
+  description:
+    "Follow-up (FUP): FUPs realizados, taxa de conversão vs meta, leads recuperados de no-show e régua de contato, com a série mensal. Use para 'fup', 'follow-up', 'recuperados', 'régua de contato'.",
+  keywords: ["fup", "follow-up", "follow up", "followup", "recuperados", "régua de contato", "regua de contato", "régua", "regua"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const f = data.fupOverview(principal);
+    const META_FUP = 0.3;
+    return {
+      narrative: `**${f.realizados}** FUPs realizados com taxa de conversão de **${formatPercent(f.taxaConversao)}**.`,
+      cards: [
+        { type: "kpi", title: "FUPs realizados", value: formatNumber(f.realizados), accent: "brand", caption: `convertidos ${f.convertidos} · sem retorno ${f.semRetorno}` },
+        {
+          type: "kpi",
+          title: "Taxa de conversão FUP",
+          value: formatPercent(f.taxaConversao),
+          accent: f.taxaConversao >= META_FUP ? "emerald" : "amber",
+          goal: { target: formatPercent(META_FUP), pct: f.taxaConversao / META_FUP },
+        },
+        { type: "kpi", title: "Recuperados no FUP", value: formatNumber(f.convertidos), accent: "emerald", caption: `de no-show R1 ${f.recuperadosR1} · de no-show R2 ${f.recuperadosR2}` },
+        { type: "kpi", title: "Régua de contato", value: `${f.reguaMedia.toFixed(1)}x`, accent: "violet", caption: `melhor assessor ${f.melhorRegua.toFixed(1)}x · tentativas médias por lead` },
+        {
+          type: "combo",
+          title: "FUPs realizados vs convertidos",
+          categories: f.monthly.map((x) => formatMonth(x.month)),
+          bars: [{ name: "FUPs realizados", values: f.monthly.map((x) => x.realizados), emphasis: "soft" }],
+          line: { name: "Taxa de conversão", values: f.monthly.map((x) => x.taxa), valueFormat: "percent" },
+          valueFormat: "number",
+        },
+      ],
+    };
+  },
+};
+
+const pipeForecastTool: ToolDef = {
+  name: "pipe_forecast",
+  description:
+    "Pipe e forecast da prospecção: pipe frio (leads em R1), forecast com probabilidade de conversão aplicada e pipe quente (contas em abertura) com NNM projetado. Use para 'pipe', 'forecast', 'pipeline', 'NNM projetado'.",
+  keywords: ["pipe", "forecast", "pipeline", "pipe frio", "pipe quente", "nnm projetado", "projetado"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const p = data.pipeForecast(principal);
+    return {
+      narrative: `Pipe frio **${formatBRL(p.pipeFrio, { compact: true })}**, forecast **${formatBRL(p.forecast, { compact: true })}**, pipe quente **${formatBRL(p.pipeQuente, { compact: true })}**.`,
+      cards: [
+        { type: "kpi", title: "Pipe frio", value: formatBRL(p.pipeFrio, { compact: true }), accent: "brand", caption: `${p.leadsR1} leads em R1 agendada · ticket médio ${formatBRL(p.ticketMedioPipe, { compact: true })}` },
+        { type: "kpi", title: "Forecast", value: formatBRL(p.forecast, { compact: true }), accent: "amber", caption: `${p.leadsR2} leads em R2 · prob. de conversão ${formatPercent(p.probConversao)} aplicada` },
+        { type: "kpi", title: "Pipe quente", value: formatBRL(p.pipeQuente, { compact: true }), accent: "emerald", caption: `${p.emAbertura} em processo de abertura · NNM projetado ${formatBRL(p.pipeQuente, { compact: true })}` },
+      ],
+    };
+  },
+};
+
+const leadOriginsTool: ToolDef = {
+  name: "lead_origins",
+  description:
+    "Origem dos leads da prospecção: participação de cada canal e a conversão em conta por origem. Use para 'origem dos leads', 'canais', 'de onde vêm os leads', 'conversão por origem'.",
+  keywords: ["origem dos leads", "origem", "canais", "de onde vêm os leads", "de onde vem os leads", "conversão por origem", "conversao por origem", "indicação", "indicacao", "linkedin"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const rows = data.leadOrigins(principal);
+    const top = rows[0];
+    return {
+      narrative: top
+        ? `Principal canal: **${top.origem}** (${formatPercent(top.share)} dos leads).`
+        : "Sem leads no escopo.",
+      cards: [
+        {
+          type: "pie",
+          title: "Leads por origem",
+          valueFormat: "number",
+          data: rows.map((r) => ({ label: r.origem, value: r.leads })),
+        },
+        {
+          type: "table",
+          title: "Conversão por origem",
+          columns: [
+            { key: "origem", label: "Origem", align: "left" },
+            { key: "leads", label: "Leads", align: "right", format: "number" },
+            { key: "share", label: "Participação", align: "right", format: "percent" },
+            { key: "conversao", label: "Conversão em conta", align: "right", format: "percent" },
+          ],
+          rows: rows.map((r) => ({ origem: r.origem, leads: r.leads, share: r.share, conversao: r.conversao })),
+        },
+      ],
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   portfolioOverview,
   allocationByClass,
   assetClassDetail,
   topClients,
   netNewMoney,
+  nnmBreakdownTool,
+  churnOverviewTool,
+  custodyBucketsTool,
+  npsOverviewTool,
   riskDistribution,
+  suitabilityAdherence,
+  portfolioPerformance,
+  clientDetail,
+  goalsTracker,
+  meetingsOverviewTool,
+  funnelConversionTool,
+  fupOverviewTool,
+  pipeForecastTool,
+  leadOriginsTool,
   teamRevenue,
   commissionByClass,
   teamRanking,
+  revenueBySegment,
+  roaOverviewTool,
 ];
 
 export function getTool(name: string): ToolDef | undefined {

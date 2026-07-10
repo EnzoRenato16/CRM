@@ -44,7 +44,7 @@ Para ligar o **LLM real** (Claude via tool-calling), copie `.env.example` para
 a segurança continua imposta no servidor e na camada de dados.
 
 ```bash
-npm test             # 10 testes de segurança (RBAC, isolamento, prompt injection)
+npm test             # 17 testes (RBAC, isolamento, prompt injection, hardening)
 npm run build        # build de produção
 ```
 
