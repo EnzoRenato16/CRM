@@ -1,0 +1,80 @@
+import type { CardSpec } from "@/lib/cards/schema";
+
+/**
+ * "Meu Painel" — a personal, persistent dashboard the user composes from a
+ * catalog of ready-made cards. Each catalog entry maps to a natural-language
+ * question that runs through the SAME secured /api/query path, so the board can
+ * never show anything the user's role couldn't ask for in the chat.
+ */
+
+export type BoardRole = "advisor" | "manager";
+
+export interface CatalogEntry {
+  id: string;
+  label: string;
+  description: string;
+  /** The question sent to /api/query to produce this card's content. */
+  question: string;
+  roles: BoardRole[];
+}
+
+export interface BoardItem {
+  id: string;
+  label: string;
+  tool: string;
+  cards: CardSpec[];
+}
+
+export const BOARD_CATALOG: CatalogEntry[] = [
+  { id: "overview", label: "Panorama da carteira", description: "Custódia, clientes e captação do mês", question: "Resumo da minha carteira", roles: ["advisor", "manager"] },
+  { id: "goals", label: "Metas e atingimento", description: "Realizado vs objetivo, com GAP", question: "Minhas metas e atingimento", roles: ["advisor", "manager"] },
+  { id: "performance", label: "Rentabilidade", description: "Retorno acumulado e vs CDI", question: "Rentabilidade da minha carteira", roles: ["advisor", "manager"] },
+  { id: "allocation", label: "Alocação por classe", description: "Distribuição do portfólio", question: "Alocação por classe de ativo", roles: ["advisor", "manager"] },
+  { id: "suitability", label: "Aderência de suitability", description: "Enquadramento de risco (compliance)", question: "Aderência de suitability", roles: ["advisor", "manager"] },
+  { id: "top-clients", label: "Maiores clientes", description: "Top clientes por patrimônio", question: "Meus 10 maiores clientes", roles: ["advisor", "manager"] },
+  { id: "nnm", label: "Captação líquida", description: "NNM mês a mês", question: "Minha captação líquida no período", roles: ["advisor", "manager"] },
+  { id: "risk", label: "Perfil de risco", description: "Distribuição por suitability", question: "Distribuição por perfil de risco", roles: ["advisor", "manager"] },
+  // Manager-only
+  { id: "team-revenue", label: "Faturamento da equipe", description: "Receita, comissões e margem", question: "Faturamento da equipe", roles: ["manager"] },
+  { id: "revenue-segment", label: "Receita por segmento", description: "Varejo / Private / Corporate", question: "Receita por segmento de cliente", roles: ["manager"] },
+  { id: "ranking", label: "Ranking dos assessores", description: "AUM e captação por assessor", question: "Ranking dos assessores", roles: ["manager"] },
+  { id: "commission-class", label: "Receita por classe", description: "De onde vem a receita", question: "Receita por classe de ativo", roles: ["manager"] },
+];
+
+export function catalogFor(role: BoardRole): CatalogEntry[] {
+  return BOARD_CATALOG.filter((e) => e.roles.includes(role));
+}
+
+const storageKey = (email: string) => `ac-board:${email || "anon"}`;
+
+export function loadBoard(email: string): BoardItem[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(storageKey(email));
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? (parsed as BoardItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveBoard(email: string, items: BoardItem[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey(email), JSON.stringify(items));
+  } catch {
+    /* quota / privacy mode — non-fatal */
+  }
+}
+
+/** Append an item to the board and persist. Returns the new list. */
+export function pinToBoard(email: string, item: BoardItem): BoardItem[] {
+  const next = [...loadBoard(email), item];
+  saveBoard(email, next);
+  return next;
+}
+
+export function newId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}

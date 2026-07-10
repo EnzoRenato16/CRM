@@ -27,8 +27,11 @@ function cardHtml(card: CardSpec): string {
   switch (card.type) {
     case "kpi": {
       const delta = card.delta ? `<div class="delta">${esc(card.delta.label)}</div>` : "";
+      const goal = card.goal
+        ? `<div class="cap">Meta ${esc(card.goal.target)} · ${Math.round(card.goal.pct * 100)}%${card.goal.caption ? " · " + esc(card.goal.caption) : ""}</div>`
+        : "";
       const cap = card.caption ? `<div class="cap">${esc(card.caption)}</div>` : "";
-      return `<div class="kpi"><div class="klabel">${esc(card.title)}</div><div class="kval">${esc(card.value)}</div>${delta}${cap}</div>`;
+      return `<div class="kpi"><div class="klabel">${esc(card.title)}</div><div class="kval">${esc(card.value)}</div>${delta}${goal}${cap}</div>`;
     }
     case "pie":
     case "bar":

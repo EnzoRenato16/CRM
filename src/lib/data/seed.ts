@@ -5,6 +5,7 @@ import type {
   CashFlowRecord,
   PerformanceRecord,
   BenchmarkPoint,
+  GoalRecord,
   AssetClass,
   Segment,
   RiskProfile,
@@ -173,4 +174,12 @@ for (const advisor of advisors) {
 export const CDI_BY_MONTH: BenchmarkPoint[] = MONTHS.map((month) => ({
   month,
   returnPct: round4(between(0.0085, 0.0098)),
+}));
+
+// Period targets (metas) per advisor. Static, plausible values; attainment is
+// computed against realized data.
+export const goals: GoalRecord[] = advisors.map((a) => ({
+  advisorId: a.id,
+  nnmTarget: round(between(6_000_000, 18_000_000), 100_000),
+  receitaTarget: round(between(250_000, 700_000), 10_000),
 }));

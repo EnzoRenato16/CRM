@@ -26,6 +26,14 @@ export const kpiCard = z.object({
       direction: z.enum(["up", "down", "flat"]),
     })
     .optional(),
+  /** Optional goal tracking: renders a progress bar (Realizado vs Objetivo). */
+  goal: z
+    .object({
+      target: z.string(), // pre-formatted target
+      pct: z.number(), // 0..1 attainment
+      caption: z.string().optional(),
+    })
+    .optional(),
   caption: z.string().optional(),
   accent: z.enum(["brand", "emerald", "amber", "rose", "violet"]).default("brand"),
 });

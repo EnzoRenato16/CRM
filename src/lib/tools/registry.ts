@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Principal, Role, AssetClass } from "@/lib/data/types";
 import { ASSET_CLASSES } from "@/lib/data/types";
 import * as data from "@/lib/data/secure-access";
+import type { GoalProgress } from "@/lib/data/secure-access";
 import type { CardSpec } from "@/lib/cards/schema";
 import { formatBRL, formatPercent, formatNumber, formatMonth } from "@/lib/format";
 
@@ -580,6 +581,39 @@ const revenueBySegment: ToolDef = {
   },
 };
 
+// --- Goals / attainment (metas, both roles) ----------------------------------
+
+function goalKpi(g: GoalProgress, accent: "brand" | "emerald"): CardSpec {
+  return {
+    type: "kpi",
+    title: g.label,
+    value: formatBRL(g.realized, { compact: true }),
+    accent,
+    goal: {
+      target: formatBRL(g.target, { compact: true }),
+      pct: Math.max(0, g.pct),
+      caption: `GAP ${formatBRL(g.gap, { compact: true })} · projeção depende do ritmo`,
+    },
+  };
+}
+
+const goalsTracker: ToolDef = {
+  name: "goals_tracker",
+  description:
+    "Metas e atingimento: realizado vs objetivo de captação (NNM) — e de receita, para gestores — com GAP e percentual de atingimento. Use para 'minhas metas', 'objetivo', 'atingimento', 'quanto falta para a meta'.",
+  keywords: ["meta", "metas", "objetivo", "objetivos", "atingimento", "gap", "quanto falta"],
+  params: NO_PARAMS,
+  run: ({ principal }) => {
+    const g = data.goalsFor(principal);
+    const cards: CardSpec[] = [goalKpi(g.nnm, "brand")];
+    if (g.receita) cards.push(goalKpi(g.receita, "emerald"));
+    return {
+      narrative: `Atingimento de captação: **${formatPercent(g.nnm.pct)}** da meta.`,
+      cards,
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   portfolioOverview,
   allocationByClass,
@@ -590,6 +624,7 @@ export const TOOLS: ToolDef[] = [
   suitabilityAdherence,
   portfolioPerformance,
   clientDetail,
+  goalsTracker,
   teamRevenue,
   commissionByClass,
   teamRanking,

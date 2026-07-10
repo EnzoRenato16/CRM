@@ -5,6 +5,7 @@ import type { AssistantResponse } from "@/lib/cards/schema";
 import { CardGrid } from "@/components/cards/CardRenderer";
 import { renderInlineMarkdown } from "@/components/cards/markdown";
 import { printReport } from "@/lib/report";
+import { pinToBoard, newId } from "@/lib/board";
 
 type Message =
   | { id: number; kind: "user"; text: string }
@@ -13,13 +14,14 @@ type Message =
 
 interface Props {
   userName: string;
+  userEmail: string;
   role: "advisor" | "manager";
   scopeLabel: string;
   suggestions: string[];
   llmEngine: "anthropic" | "rule-based";
 }
 
-export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }: Props) {
+export function ChatPanel({ userName, userEmail, role, scopeLabel, suggestions, llmEngine }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -85,6 +87,7 @@ export function ChatPanel({ userName, role, scopeLabel, suggestions, llmEngine }
                     message={m}
                     scopeLabel={scopeLabel}
                     userName={userName}
+                    userEmail={userEmail}
                     question={question}
                   />
                 );
@@ -194,11 +197,13 @@ function MessageView({
   message,
   scopeLabel,
   userName,
+  userEmail,
   question,
 }: {
   message: Message;
   scopeLabel: string;
   userName: string;
+  userEmail: string;
   question?: string;
 }) {
   if (message.kind === "user") {
@@ -217,7 +222,43 @@ function MessageView({
       </div>
     );
   }
-  const { response } = message;
+  return (
+    <AssistantMessage
+      response={message.response}
+      scopeLabel={scopeLabel}
+      userName={userName}
+      userEmail={userEmail}
+      question={question}
+    />
+  );
+}
+
+function AssistantMessage({
+  response,
+  scopeLabel,
+  userName,
+  userEmail,
+  question,
+}: {
+  response: AssistantResponse;
+  scopeLabel: string;
+  userName: string;
+  userEmail: string;
+  question?: string;
+}) {
+  const [pinned, setPinned] = useState(false);
+  const actionable = response.meta.tool !== "help" && response.meta.tool !== "access_denied";
+
+  function pin() {
+    pinToBoard(userEmail, {
+      id: newId(),
+      label: question ?? response.meta.tool,
+      tool: response.meta.tool,
+      cards: response.cards,
+    });
+    setPinned(true);
+  }
+
   return (
     <div className="space-y-3">
       {response.narrative && (
@@ -230,8 +271,8 @@ function MessageView({
       )}
       <div className="sm:pl-11">
         <CardGrid cards={response.cards} />
-        {response.meta.tool !== "help" && response.meta.tool !== "access_denied" && (
-          <div className="mt-2 flex items-center gap-3">
+        {actionable && (
+          <div className="mt-2 flex flex-wrap items-center gap-3">
             <p className="text-[11px] text-ink-400">
               gerado por IA · ferramenta <code className="rounded bg-ink-100 px-1 dark:bg-ink-800">{response.meta.tool}</code>
             </p>
@@ -244,6 +285,21 @@ function MessageView({
                 <path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M6 14h12v8H6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               Exportar PDF
+            </button>
+            <button
+              type="button"
+              onClick={pin}
+              disabled={pinned}
+              className="inline-flex items-center gap-1 rounded-md border border-ink-200 px-2 py-1 text-[11px] font-medium text-ink-500 transition hover:border-brand-400 hover:text-brand-600 disabled:border-emerald-300 disabled:text-emerald-600 dark:border-ink-700 dark:hover:border-brand-500 dark:disabled:border-emerald-500/40 dark:disabled:text-emerald-400"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                {pinned ? (
+                  <path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                ) : (
+                  <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                )}
+              </svg>
+              {pinned ? "Fixado no painel" : "Fixar no painel"}
             </button>
           </div>
         )}

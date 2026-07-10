@@ -240,6 +240,52 @@ export function netNewMoneyTotal(principal: Principal): number {
   return sumBy(scopedCashFlows(principal), (f) => f.netNewMoney);
 }
 
+// --- Goals / attainment (metas) ----------------------------------------------
+
+export interface GoalProgress {
+  label: string;
+  target: number;
+  realized: number;
+  /** Attainment 0..1 (can exceed 1). */
+  pct: number;
+  gap: number;
+}
+
+/**
+ * Goal attainment within scope. NNM applies to both roles; the revenue goal is
+ * commercial and returned only for managers (advisors never see revenue).
+ */
+export function goalsFor(principal: Principal): { nnm: GoalProgress; receita?: GoalProgress } {
+  const nnmTarget =
+    principal.role === "manager"
+      ? sumBy(db.goals, (g) => g.nnmTarget)
+      : db.goals.find((g) => g.advisorId === principal.advisorId)?.nnmTarget ?? 0;
+  const nnmRealized = netNewMoneyTotal(principal);
+  const nnm: GoalProgress = {
+    label: "Captação NNM",
+    target: nnmTarget,
+    realized: nnmRealized,
+    pct: nnmTarget ? nnmRealized / nnmTarget : 0,
+    gap: nnmTarget - nnmRealized,
+  };
+
+  if (principal.role === "manager") {
+    const recTarget = sumBy(db.goals, (g) => g.receitaTarget);
+    const recRealized = sumBy(db.positions, (p) => p.grossRevenueYtd);
+    return {
+      nnm,
+      receita: {
+        label: "Receita",
+        target: recTarget,
+        realized: recRealized,
+        pct: recTarget ? recRealized / recTarget : 0,
+        gap: recTarget - recRealized,
+      },
+    };
+  }
+  return { nnm };
+}
+
 // --- Suitability adherence (compliance) --------------------------------------
 
 export interface SuitabilityResult {

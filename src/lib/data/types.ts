@@ -130,6 +130,15 @@ export interface BenchmarkPoint {
   returnPct: number;
 }
 
+/** Period targets per advisor (metas). Realized values come from the data. */
+export interface GoalRecord {
+  advisorId: string;
+  /** Net new money (captação NNM) target for the period. */
+  nnmTarget: number;
+  /** Gross revenue target for the period (surfaced to managers only). */
+  receitaTarget: number;
+}
+
 /** A named numeric series point used by most aggregation results. */
 export interface SeriesPoint {
   label: string;

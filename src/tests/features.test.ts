@@ -93,3 +93,21 @@ test("client_detail routes and returns the client's own data end-to-end", async 
   assert.equal(res.meta.tool, "client_detail");
   assert.ok(JSON.stringify(res.cards).includes(mine));
 });
+
+// --- Goals / metas -----------------------------------------------------------
+
+test("goals: NNM target for both roles, receita target only for managers", () => {
+  const a = data.goalsFor(ana);
+  assert.ok(a.nnm.target > 0);
+  assert.equal(a.receita, undefined);
+  const g = data.goalsFor(gestora);
+  assert.ok(g.nnm.target > 0);
+  assert.ok(g.receita && g.receita.target > 0);
+});
+
+test("goals_tracker routes and emits a KPI carrying a goal", async () => {
+  const res = await orchestrate(ana, "minhas metas e atingimento");
+  assert.equal(res.meta.tool, "goals_tracker");
+  const kpi = res.cards.find((c) => c.type === "kpi");
+  assert.ok(kpi && "goal" in kpi && kpi.goal);
+});
